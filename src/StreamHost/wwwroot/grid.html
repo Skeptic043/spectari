@@ -26,6 +26,17 @@
   }
   header button:hover { background: #4f9cf9; }
   header .hint { color: #9aa1ab; font-size: 12px; }
+  header .spacer { flex: 1; }
+  header .ghost { background: #1d2026; border: 1px solid #2e333b; color: #9aa1ab; }
+  header .ghost:hover { background: #242830; color: #e6e8eb; }
+  /* Restore chip shown while the bar is hidden: faint until hovered. */
+  #showBar {
+    position: fixed; top: 8px; right: 8px; z-index: 10; width: 30px; height: 30px;
+    display: none; align-items: center; justify-content: center;
+    background: rgba(22, 24, 28, .6); border: 1px solid #2e333b; border-radius: 8px;
+    color: #9aa1ab; cursor: pointer; opacity: .3; user-select: none;
+  }
+  #showBar:hover { opacity: 1; color: #e6e8eb; }
   #grid {
     flex: 1; display: grid; gap: 6px; padding: 6px; min-height: 0;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr));
@@ -61,7 +72,10 @@
   <input id="urlInput" placeholder="paste a friend's stream link (http://100.x.y.z:8093/)" spellcheck="false">
   <button id="addBtn">Add</button>
   <span class="hint">Streams you add are remembered in this browser.</span>
+  <span class="spacer"></span>
+  <button id="hideBtn" class="ghost" title="Hide this bar">Hide bar</button>
 </header>
+<div id="showBar" title="Show the add-stream bar">&#9776;</div>
 <div id="grid"></div>
 <div id="empty">No streams added yet.<br>Paste each friend's stream link above once — they'll stick around.</div>
 
@@ -130,8 +144,22 @@ function render() {
     tile.appendChild(frame);
     grid.appendChild(tile);
   }
+  fixSpans();
   poll();
 }
+
+// With an odd tile count the auto-fit grid leaves a dead cell (3 streams in a
+// 2-wide grid = one empty quarter). Widen the last tile to fill its row.
+function fixSpans() {
+  const tiles = grid.children;
+  for (const t of tiles) t.style.gridColumn = "";
+  if (!tiles.length) return;
+  const cols = getComputedStyle(grid).gridTemplateColumns.split(" ").length;
+  const leftover = tiles.length % cols;
+  if (cols > 1 && leftover !== 0)
+    tiles[tiles.length - 1].style.gridColumn = `span ${cols - leftover + 1}`;
+}
+window.addEventListener("resize", fixSpans);
 
 function poll() {
   for (const tile of grid.children) {
@@ -166,6 +194,21 @@ function move(url, dir) {
   save(urls);
   render();
 }
+
+// The add-stream bar can be tucked away while watching; the faint chip
+// top-right brings it back. Remembered per browser like the stream list.
+const HIDEBAR_KEY = "streamhost_grid_hidebar";
+const headerEl = document.querySelector("header");
+const showBar = document.getElementById("showBar");
+function applyBarVisibility() {
+  const hidden = localStorage.getItem(HIDEBAR_KEY) === "1";
+  headerEl.style.display = hidden ? "none" : "flex";
+  showBar.style.display = hidden ? "flex" : "none";
+  fixSpans();
+}
+document.getElementById("hideBtn").onclick = () => { localStorage.setItem(HIDEBAR_KEY, "1"); applyBarVisibility(); };
+showBar.onclick = () => { localStorage.setItem(HIDEBAR_KEY, "0"); applyBarVisibility(); };
+applyBarVisibility();
 
 document.getElementById("addBtn").onclick = add;
 urlInput.addEventListener("keydown", e => { if (e.key === "Enter") add(); });

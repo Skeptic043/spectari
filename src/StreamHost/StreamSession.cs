@@ -16,6 +16,10 @@ public sealed record SessionConfig
     public IntPtr MonitorHandle { get; init; }
     public IntPtr WindowHandle { get; init; }
     public string SourceName { get; init; } = "";
+
+    /// <summary>Display name shown to viewers (grid tiles, viewer tab title).
+    /// Empty = fall back to the machine name.</summary>
+    public string StreamName { get; init; } = "";
     public uint AudioPid { get; init; }
     public int Fps { get; init; } = 60;
     public int BitrateKbps { get; init; } = 12000;
@@ -171,7 +175,15 @@ public sealed class StreamSession
             }, TaskScheduler.Default);
         }
 
-        var broadcaster = new Broadcaster { Width = outW, Height = outH, Fps = _config.Fps, HasAudio = audioPipeName is not null };
+        var broadcaster = new Broadcaster
+        {
+            Width = outW,
+            Height = outH,
+            Fps = _config.Fps,
+            HasAudio = audioPipeName is not null,
+            StreamName = string.IsNullOrWhiteSpace(_config.StreamName)
+                ? Environment.MachineName : _config.StreamName.Trim(),
+        };
         Broadcaster = broadcaster;
         var splitterTask = Task.Run(() => Mp4Splitter.RunAsync(ffmpeg.Output, broadcaster, ct), ct);
 

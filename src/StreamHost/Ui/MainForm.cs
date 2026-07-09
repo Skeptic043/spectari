@@ -55,6 +55,7 @@ public sealed class MainForm : Form
         public int PresetFps { get; set; } = 60;
         public string AudioSource { get; set; } = "window"; // "none" | "window" | process name
         public int Port { get; set; } = 8093;
+        public string StreamName { get; set; } = ""; // shown to viewers; empty = machine name
     }
 
     private static readonly string SettingsPath = Path.Combine(
@@ -67,6 +68,7 @@ public sealed class MainForm : Form
     private readonly Button _refreshButton = new() { Text = "↻", Width = 34 };
     private readonly ComboBox _presetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _audioCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230, FlatStyle = FlatStyle.Flat };
+    private readonly TextBox _nameInput = new() { Width = 150, MaxLength = 32, BorderStyle = BorderStyle.FixedSingle, Text = Environment.MachineName };
     private readonly Button _watchButton = new() { Text = "Watch streams", Width = 118, Height = 38 };
     private readonly Button _copyLogButton = new() { Text = "Copy log", Width = 82, Height = 24, Anchor = AnchorStyles.Top | AnchorStyles.Right };
     private readonly NumericUpDown _portInput = new() { Minimum = 1024, Maximum = 65535, Value = 8093, Width = 80 };
@@ -125,6 +127,9 @@ public sealed class MainForm : Form
         settingsFlow.SetFlowBreak(_portInput, true);
         settingsFlow.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(0, 9, 4, 0), ForeColor = Dim });
         settingsFlow.Controls.Add(_audioCombo);
+        settingsFlow.Controls.Add(new Label { Text = "Name:", AutoSize = true, Margin = new Padding(16, 9, 4, 0), ForeColor = Dim });
+        settingsFlow.Controls.Add(_nameInput);
+        _nameInput.Margin = new Padding(0, 6, 0, 0);
         settingsGroup.Controls.Add(settingsFlow);
 
         var actionPanel = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(8, 5, 0, 0), BackColor = Bg };
@@ -199,7 +204,7 @@ public sealed class MainForm : Form
             if (dir is not null)
                 try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dir) { UseShellExecute = true }); } catch { }
         });
-        trayMenu.Items.Add("Exit", null, (_, _) => { _tray.Visible = false; Close(); });
+        trayMenu.Items.Add("Exit", null, (_, _) => { _tray.Visible = false; Application.Exit(); });
         _tray.ContextMenuStrip = trayMenu;
 
         Resize += (_, _) =>
@@ -213,6 +218,16 @@ public sealed class MainForm : Form
             }
         };
         FormClosing += (_, _) => { SaveSettings(); _statsTimer.Stop(); _session?.Stop(); _tray.Visible = false; };
+        // Closing the panel stops YOUR stream but leaves an open Watch window
+        // alive so you can keep viewing; the app exits with its last window.
+        // (The message loop is Application.Run() without a form, see Program.)
+        FormClosed += (_, _) =>
+        {
+            if (_watchForm is { IsDisposed: false } watch)
+                watch.FormClosed += (_, _) => Application.Exit();
+            else
+                Application.Exit();
+        };
 
         PopulateSources();
         LoadSettings();
@@ -366,6 +381,7 @@ public sealed class MainForm : Form
             {
                 WindowHandle = w.Handle,
                 SourceName = $"window '{w.Title}' [{w.ProcessName}]",
+                StreamName = _nameInput.Text.Trim(),
                 AudioPid = audioPid,
                 Fps = preset.Fps,
                 BitrateKbps = preset.Kbps,
@@ -381,6 +397,7 @@ public sealed class MainForm : Form
             {
                 MonitorHandle = m.Handle,
                 SourceName = m.DeviceName,
+                StreamName = _nameInput.Text.Trim(),
                 AudioPid = audioPid,
                 Fps = preset.Fps,
                 BitrateKbps = preset.Kbps,
@@ -564,6 +581,7 @@ public sealed class MainForm : Form
             _presetCombo.SelectedIndex = presetIdx >= 0 ? presetIdx : DefaultPresetIndex;
             SelectAudioByKey(s.AudioSource);
             if (s.Port is >= 1024 and <= 65535) _portInput.Value = s.Port;
+            if (!string.IsNullOrWhiteSpace(s.StreamName)) _nameInput.Text = s.StreamName;
         }
         catch { /* corrupted settings are not worth crashing over */ }
     }
@@ -582,6 +600,7 @@ public sealed class MainForm : Form
                 PresetFps = (_presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex]).Fps,
                 AudioSource = SelectedAudioKey(),
                 Port = (int)_portInput.Value,
+                StreamName = _nameInput.Text.Trim(),
             };
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));

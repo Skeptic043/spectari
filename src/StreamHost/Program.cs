@@ -28,7 +28,11 @@ internal static class Program
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.SystemAware);
             System.Windows.Forms.Application.EnableVisualStyles();
             System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
-            System.Windows.Forms.Application.Run(new MainForm());
+            // Formless message loop: the app exits when its LAST window closes
+            // (MainForm/WatchForm decide via Application.Exit), so the Watch
+            // window survives closing the main panel.
+            new MainForm().Show();
+            System.Windows.Forms.Application.Run();
             return 0;
         }
 
@@ -100,6 +104,7 @@ internal static class Program
             MonitorHandle = monitorHandle,
             WindowHandle = windowHandle,
             SourceName = sourceName,
+            StreamName = opts.Name,
             AudioPid = audioPid,
             Fps = opts.Fps,
             BitrateKbps = opts.BitrateKbps,
@@ -151,6 +156,7 @@ internal static class Program
         public bool ListWindows = false;
         public bool NoCursor = false;
         public string Audio = "";
+        public string Name = "";
         public bool NoAudio = false;
         public bool CompatCapture = false;
         public int FragMs = 50; // batched fragments: Firefox presents ~25fps with per-frame appends; --frag-ms 0 = per-frame
@@ -175,6 +181,7 @@ internal static class Program
                     case "--list-windows": o.ListWindows = true; break;
                     case "--no-cursor": o.NoCursor = true; break;
                     case "--audio": o.Audio = Next(); break;
+                    case "--name": o.Name = Next(); break;
                     case "--no-audio": o.NoAudio = true; break;
                     case "--compat-capture": o.CompatCapture = true; break;
                     case "--frag-ms": o.FragMs = int.Parse(Next()); break;
@@ -182,7 +189,7 @@ internal static class Program
                         Console.WriteLine("StreamHost                     -> app window");
                         Console.WriteLine("StreamHost [--monitor N | --window \"title/exe\"] [--fps 30|60] [--bitrate kbps] [--port N]");
                         Console.WriteLine("           [--height 1080] [--encoder auto|h264_nvenc|h264_amf|h264_qsv|libx264]");
-                        Console.WriteLine("           [--audio \"name\"] [--no-audio] [--no-cursor] [--frag-ms N]");
+                        Console.WriteLine("           [--name \"shown to viewers\"] [--audio \"app\"] [--no-audio] [--no-cursor] [--frag-ms N]");
                         Console.WriteLine("           [--list-monitors] [--list-windows]");
                         Environment.Exit(0);
                         break;
