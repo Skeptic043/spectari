@@ -42,18 +42,68 @@ internal static class Program
                 return 0;
 
             Util.ConsoleMirror.Install();
+            InstallCrashLogging();
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.SystemAware);
             System.Windows.Forms.Application.EnableVisualStyles();
             System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
-            // Formless message loop: the app exits when its LAST window closes
-            // (MainForm/WatchForm decide via Application.Exit), so the Watch
-            // window survives closing the main panel.
-            new MainForm().Show();
-            System.Windows.Forms.Application.Run();
+            // AppRunContext owns the control panel's lifetime: the app exits when
+            // its last window closes, and a second launch brings the panel back
+            // even if it was closed while a Watch window kept the process alive.
+            System.Windows.Forms.Application.Run(new Ui.AppRunContext());
             return 0;
         }
 
         return RunConsole(args);
+    }
+
+    /// <summary>Final crash boundary for the GUI: log every unhandled exception to
+    /// the on-disk log (via ConsoleMirror's tee of Console.Error), and on a fatal
+    /// UI-thread exception point the user at that log file. Reuses the existing
+    /// logger; adds no new sink. Wired before the message loop starts.</summary>
+    private static void InstallCrashLogging()
+    {
+        System.Windows.Forms.Application.SetUnhandledExceptionMode(
+            System.Windows.Forms.UnhandledExceptionMode.CatchException);
+
+        System.Windows.Forms.Application.ThreadException += (_, e) =>
+        {
+            LogFatal("ui-thread", e.Exception, fatal: true);
+            try
+            {
+                System.Windows.Forms.MessageBox.Show(
+                    $"StreamHost hit an unexpected error.\n\n{e.Exception.Message}\n\n" +
+                    $"Details were written to the log file:\n{Util.ConsoleMirror.LogFilePath}",
+                    "StreamHost", System.Windows.Forms.MessageBoxButtons.OK,
+                    System.Windows.Forms.MessageBoxIcon.Error);
+            }
+            catch { }
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            LogFatal("background", e.ExceptionObject as Exception, fatal: e.IsTerminating);
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            LogFatal("task", e.Exception, fatal: false);
+            e.SetObserved();
+        };
+    }
+
+    /// <summary>Writes one crash record to the log: version, thread, whatever
+    /// session state is cheaply reachable, and the exception. Never throws (a
+    /// logger that crashes the crash handler helps nobody).</summary>
+    private static void LogFatal(string origin, Exception? ex, bool fatal)
+    {
+        try
+        {
+            var w = Console.Error;
+            var t = Thread.CurrentThread;
+            w.WriteLine($"[crash] {(fatal ? "FATAL" : "unhandled")} on {origin} thread '{t.Name ?? "?"}' (#{Environment.CurrentManagedThreadId})");
+            w.WriteLine($"[crash] StreamHost {MainForm.AppVersion()} on {Environment.OSVersion.VersionString}");
+            w.WriteLine($"[crash] {Ui.AppRunContext.Current?.DescribeState() ?? "no window context"}");
+            w.WriteLine($"[crash] {ex?.ToString() ?? "(no exception object)"}");
+        }
+        catch { }
     }
 
     /// <summary>The exe is WinExe (no console window on double-click), so console
@@ -77,7 +127,16 @@ internal static class Program
     {
         EnsureConsole();
         Util.ConsoleMirror.Install();
-        var opts = Options.Parse(args);
+
+        Options opts;
+        try { opts = Options.Parse(args); }
+        catch (ArgumentException ex)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            Console.Error.WriteLine("Run StreamHost --help for usage.");
+            return 2;
+        }
+        if (opts.ShowHelp) { PrintHelp(); return 0; }
 
         if (opts.ListWindows)
         {
@@ -171,12 +230,16 @@ internal static class Program
             Thread.Sleep(800); // let the port release
             done.Reset();
             var retry = new StreamSession(config with { Encoder = "libx264" });
-            retry.Stopped += _ => done.Set();
+            retry.Stopped += r => { stopReason = r; done.Set(); };
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; retry.Stop(); };
             retry.Start();
             done.Wait();
         }
-        return 0;
+
+        // Exit 0 only for a clean, user-initiated stop; any pipeline failure
+        // (encoder, capture, splitter, or server) exits nonzero so scripts and
+        // callers can tell a broken run from a normal Ctrl+C.
+        return stopReason is null or "stopped" ? 0 : 1;
     }
 
     private sealed record Options
@@ -196,7 +259,16 @@ internal static class Program
         public bool NoAudio = false;
         public bool NoKey = false;
         public bool CompatCapture = false;
+        public bool ShowHelp = false;
         public int FragMs = 50; // batched fragments: Firefox presents ~25fps with per-frame appends; --frag-ms 0 = per-frame
+
+        // Range guards with friendly one-line messages; RunConsole turns a thrown
+        // ArgumentException into a nonzero exit. Kept out of the switch so the
+        // parser stays a plain flag reader.
+        private static int Positive(string flag, int n) =>
+            n > 0 ? n : throw new ArgumentException($"{flag} must be greater than 0 (got {n})");
+        private static int InRange(string flag, int n, int lo, int hi) =>
+            n >= lo && n <= hi ? n : throw new ArgumentException($"{flag} must be between {lo} and {hi} (got {n})");
 
         public static Options Parse(string[] args)
         {
@@ -204,15 +276,17 @@ internal static class Program
             for (int i = 0; i < args.Length; i++)
             {
                 string Next() => ++i < args.Length ? args[i] : throw new ArgumentException($"{args[i - 1]} needs a value");
+                int Int(string flag) => int.TryParse(Next(), out int n)
+                    ? n : throw new ArgumentException($"{flag} expects a whole number, got '{args[i]}'");
                 switch (args[i])
                 {
-                    case "--monitor": o.Monitor = int.Parse(Next()); break;
+                    case "--monitor": o.Monitor = Int("--monitor"); break;
                     case "--window": o.Window = Next(); break;
-                    case "--fps": o.Fps = int.Parse(Next()); break;
-                    case "--bitrate": o.BitrateKbps = int.Parse(Next()); break;
-                    case "--port": o.Port = int.Parse(Next()); break;
-                    case "--height": o.OutHeight = int.Parse(Next()); break;
-                    case "--width": Next(); break; // legacy no-op; height drives scaling, AR preserved
+                    case "--fps": o.Fps = Positive("--fps", Int("--fps")); break;
+                    case "--bitrate": o.BitrateKbps = Int("--bitrate"); break;
+                    case "--port": o.Port = InRange("--port", Int("--port"), 1, 65535); break;
+                    case "--height": o.OutHeight = Positive("--height", Int("--height")); break;
+                    case "--width": Positive("--width", Int("--width")); break; // legacy no-op; height drives scaling, AR preserved
                     case "--encoder": o.Encoder = Next(); break;
                     case "--list-monitors": o.ListMonitors = true; break;
                     case "--list-windows": o.ListWindows = true; break;
@@ -222,23 +296,22 @@ internal static class Program
                     case "--no-audio": o.NoAudio = true; break;
                     case "--no-key": o.NoKey = true; break;
                     case "--compat-capture": o.CompatCapture = true; break;
-                    case "--frag-ms": o.FragMs = int.Parse(Next()); break;
-                    case "--help":
-                        Console.WriteLine("StreamHost                     -> app window");
-                        Console.WriteLine("StreamHost [--monitor N | --window \"title/exe\"] [--fps 30|60] [--bitrate kbps, 0=auto] [--port N]");
-                        Console.WriteLine("           [--height 1080] [--encoder auto|h264_nvenc|h264_amf|h264_qsv|libx264]");
-                        Console.WriteLine("           [--name \"shown to viewers\"] [--audio \"app\"] [--no-audio] [--no-cursor] [--frag-ms N]");
-                        Console.WriteLine("           [--no-key (viewer links work without ?k=)] [--list-monitors] [--list-windows]");
-                        Console.WriteLine("StreamHost --setup-port N [--setup-user \"DOMAIN\\user\"]  -> reserve URL + firewall (admin)");
-                        Environment.Exit(0);
-                        break;
-                    default:
-                        Console.Error.WriteLine($"Unknown argument {args[i]} (try --help)");
-                        Environment.Exit(1);
-                        break;
+                    case "--frag-ms": o.FragMs = InRange("--frag-ms", Int("--frag-ms"), 0, 1000); break;
+                    case "--help": o.ShowHelp = true; return o;
+                    default: throw new ArgumentException($"unknown argument '{args[i]}' (try --help)");
                 }
             }
             return o;
         }
+    }
+
+    private static void PrintHelp()
+    {
+        Console.WriteLine("StreamHost                     -> app window");
+        Console.WriteLine("StreamHost [--monitor N | --window \"title/exe\"] [--fps 30|60] [--bitrate kbps, 0=auto] [--port N]");
+        Console.WriteLine("           [--height 1080] [--encoder auto|h264_nvenc|h264_amf|h264_qsv|libx264]");
+        Console.WriteLine("           [--name \"shown to viewers\"] [--audio \"app\"] [--no-audio] [--no-cursor] [--frag-ms N]");
+        Console.WriteLine("           [--no-key (viewer links work without ?k=)] [--list-monitors] [--list-windows]");
+        Console.WriteLine("StreamHost --setup-port N [--setup-user \"DOMAIN\\user\"]  -> reserve URL + firewall (admin)");
     }
 }
