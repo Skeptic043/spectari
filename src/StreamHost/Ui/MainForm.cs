@@ -288,17 +288,11 @@ public sealed class MainForm : Form
             try { BeginInvoke(() => AppendLog(line)); } catch { }
         };
 
-        FormClosing += (_, _) => { SaveSettings(); _statsTimer.Stop(); _session?.Stop(); StopIdleServer(); };
         // Closing the panel stops YOUR stream but leaves an open Watch window
-        // alive so you can keep viewing; the app exits with its last window.
-        // (The message loop is Application.Run() without a form, see Program.)
-        FormClosed += (_, _) =>
-        {
-            if (_watchForm is { IsDisposed: false } watch)
-                watch.FormClosed += (_, _) => Application.Exit();
-            else
-                Application.Exit();
-        };
+        // alive so you can keep viewing. AppRunContext owns app exit (it ends
+        // when the last user window closes) and can bring this panel back on a
+        // second launch, so there is no Application.Exit wiring here.
+        FormClosing += (_, _) => { SaveSettings(); _statsTimer.Stop(); _session?.Stop(); StopIdleServer(); };
 
         PopulateSources();
         LoadSettings();
@@ -358,12 +352,12 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>Bring the window back to the user: a second launch of the app
-    /// broadcasts SingleInstance.ShowMessage, and this is where the running
-    /// instance answers it (un-minimize, raise, focus). The TopMost flip is the
-    /// standard way past Windows' foreground-lock, which otherwise just flashes
-    /// the taskbar button instead of actually raising the window.</summary>
-    private void ShowAndActivate()
+    /// <summary>Bring the panel back to the user (un-minimize, raise, focus).
+    /// AppRunContext calls this when a second launch broadcasts
+    /// SingleInstance.ShowMessage. The TopMost flip is the standard way past
+    /// Windows' foreground-lock, which otherwise just flashes the taskbar button
+    /// instead of actually raising the window.</summary>
+    internal void ShowAndActivate()
     {
         if (WindowState == FormWindowState.Minimized)
             WindowState = FormWindowState.Normal;
@@ -372,16 +366,6 @@ public sealed class MainForm : Form
         TopMost = true;
         TopMost = wasTop;
         Activate();
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == Util.SingleInstance.ShowMessage)
-        {
-            ShowAndActivate();
-            return;
-        }
-        base.WndProc(ref m);
     }
 
     private void PopulateSources()
@@ -993,6 +977,7 @@ public sealed class MainForm : Form
             return;
         }
         _watchForm = new WatchForm((int)_portInput.Value);
+        AppRunContext.Current?.Track(_watchForm); // count it toward app lifetime
         _watchForm.Show();
     }
 
@@ -1086,9 +1071,7 @@ public sealed class MainForm : Form
             sb.AppendLine($"ffmpeg:   {FfmpegVersionLine()}");
             sb.AppendLine($"tailnet:  {tailnet}");
             sb.AppendLine($"enc cache: {ReadSmallFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "encoder.cache"))}");
-            sb.AppendLine(_session is { } s
-                ? $"session:  {s.Description} via {s.ActiveEncoder}, state {s.Broadcaster?.State}, viewers {s.Broadcaster?.ViewerCount}, localOnly {s.LocalOnly}"
-                : "session:  not streaming");
+            sb.AppendLine($"session:  {DescribeSessionState()}");
             sb.AppendLine($"settings: {ReadSmallFile(SettingsPath)}");
             sb.AppendLine("---- last 200 log lines ----");
             // Prefer the on-disk log: it carries per-line timestamps (the box
@@ -1105,10 +1088,17 @@ public sealed class MainForm : Form
         }
     }
 
-    private static string AppVersion() =>
+    internal static string AppVersion() =>
         System.Reflection.Assembly.GetExecutingAssembly()
             .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
             is [System.Reflection.AssemblyInformationalVersionAttribute a, ..] ? a.InformationalVersion : "dev";
+
+    /// <summary>One-line description of the running session (or "not streaming"),
+    /// shared by the support bundle and the crash log.</summary>
+    internal string DescribeSessionState() =>
+        _session is { } s
+            ? $"{s.Description} via {s.ActiveEncoder}, state {s.Broadcaster?.State}, viewers {s.Broadcaster?.ViewerCount}, localOnly {s.LocalOnly}"
+            : "not streaming";
 
     private static List<string> GpuAdapters()
     {
