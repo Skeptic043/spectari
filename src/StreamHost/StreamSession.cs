@@ -71,6 +71,11 @@ public sealed class StreamSession
 
     /// <summary>The encoder actually running (after auto-pick and probe), e.g. "h264_nvenc".</summary>
     public string? ActiveEncoder { get; private set; }
+
+    /// <summary>Resolved output pixel size (native honored), so a CPU-fallback site
+    /// knows the real resolution even when the config asked for native (OutHeight==0).</summary>
+    public int OutputWidth { get; private set; }
+    public int OutputHeight { get; private set; }
     public string? ViewKey => _config.ViewKey;
     public bool IsRunning => _thread is { IsAlive: true };
     public bool IsStopping => _cts.IsCancellationRequested;
@@ -155,6 +160,8 @@ public sealed class StreamSession
 
         string encoder = FfmpegEncoder.PickEncoder(capture.GpuVendorId, _config.Encoder);
         ActiveEncoder = encoder;
+        OutputWidth = outW;
+        OutputHeight = outH;
 
         // 0 = auto: scale bitrate with what actually goes out. A "Native" preset
         // used to hardcode 12 Mbps even when native meant 1440p or 4K.

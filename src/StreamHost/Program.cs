@@ -227,6 +227,15 @@ internal static class Program
         if (encoderFailed && opts.Encoder != "libx264")
         {
             Console.WriteLine("[encoder] GPU encoder produced no video — restarting with the CPU encoder (libx264)…");
+            // Auto mode trusts a cached probe verdict; a live stall just disproved
+            // it, so drop the cache to force a fresh probe next launch. Explicit
+            // encoder mode never touched the cache, so there is nothing to clear.
+            if (string.IsNullOrEmpty(opts.Encoder) || opts.Encoder == "auto")
+                StreamHost.Encode.FfmpegEncoder.InvalidateProbeCache();
+            // libx264 at 1440p and up may not sustain the same resolution/fps the
+            // GPU was handling — warn instead of presenting fallback as recovery.
+            if (session.OutputHeight >= 1440)
+                Console.WriteLine($"[encoder] warning: libx264 (CPU) may not keep up at {session.OutputWidth}x{session.OutputHeight}@{opts.Fps} — lower the Preset if playback is choppy.");
             Thread.Sleep(800); // let the port release
             done.Reset();
             var retry = new StreamSession(config with { Encoder = "libx264" });
