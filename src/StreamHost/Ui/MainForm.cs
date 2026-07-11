@@ -566,6 +566,15 @@ public sealed class MainForm : Form
                         _retriedCpu = true;
                         _pendingCpuRetry = true;
                         AppendLog("GPU encoder produced no video — restarting with the CPU encoder (libx264)…");
+                        // Auto mode trusts a cached probe verdict; a live stall just
+                        // disproved it, so drop the cache to force a fresh probe next
+                        // launch. Explicit encoder mode never cached, so nothing to clear.
+                        if (string.IsNullOrEmpty(config.Encoder) || config.Encoder == "auto")
+                            StreamHost.Encode.FfmpegEncoder.InvalidateProbeCache();
+                        // libx264 at 1440p and up may not sustain the same resolution/fps
+                        // the GPU handled — warn instead of calling fallback a recovery.
+                        if (session.OutputHeight >= 1440)
+                            AppendLog($"Warning: libx264 (CPU) may not keep up at {session.OutputWidth}x{session.OutputHeight}@{config.Fps} — lower the Preset if playback is choppy.");
                         var fallback = config with { Encoder = "libx264" };
                         var t = new System.Windows.Forms.Timer { Interval = 250 };
                         t.Tick += (_, _) =>

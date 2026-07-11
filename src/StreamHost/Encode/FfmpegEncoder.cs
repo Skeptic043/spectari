@@ -112,6 +112,29 @@ public sealed class FfmpegEncoder : IDisposable
         _stdin.Write(frame, 0, length);
     }
 
+    /// <summary>Single source of truth for the positive-probe cache file
+    /// (%AppData%/StreamHost/encoder.cache), shared by PickEncoder and
+    /// InvalidateProbeCache so the path is never spelled out in two places.</summary>
+    private static string CachePath => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "encoder.cache");
+
+    /// <summary>Drops the cached "passed" verdict so the next auto-mode launch
+    /// re-probes the GPU encoder instead of trusting a token a live stall just
+    /// disproved. Best-effort: a missing or unwritable cache just means the
+    /// probe runs again anyway.</summary>
+    public static void InvalidateProbeCache()
+    {
+        try
+        {
+            if (File.Exists(CachePath))
+            {
+                File.Delete(CachePath);
+                Console.WriteLine("[encoder] cleared the cached probe verdict — the next launch re-probes the GPU encoder.");
+            }
+        }
+        catch { }
+    }
+
     /// <summary>Picks the hardware encoder for this GPU vendor, then PROVES it can
     /// actually encode (drivers lie; being compiled into ffmpeg proves nothing).
     /// Falls back to CPU x264 so the stream starts on any machine.</summary>
@@ -132,8 +155,7 @@ public sealed class FfmpegEncoder : IDisposable
         // Cache a PASSED probe per GPU so startup skips the 1-2s self-test.
         // Failures are deliberately not cached — a driver hiccup shouldn't
         // condemn the machine to CPU encoding forever.
-        string cachePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "encoder.cache");
+        string cachePath = CachePath;
         // Cache token version: bump when the probe changes so stale "passed"
         // verdicts (e.g. an AMD card that cleared the old trivial 320x240 test
         // but stalls on real content) get re-evaluated.
