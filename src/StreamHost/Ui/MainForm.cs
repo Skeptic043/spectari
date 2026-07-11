@@ -1134,17 +1134,13 @@ public sealed class MainForm : Form
     {
         try
         {
-            using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
-                Encode.FfmpegEncoder.FfmpegPath, "-version")
-            {
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true,
-            });
-            if (p is null) return "not found";
-            string? line = p.StandardOutput.ReadLine();
-            p.WaitForExit(3000);
-            return line ?? "no output";
+            // Runner adopts + tree-kills on timeout, so a hung "-version" can't leak.
+            var r = Util.ProcessRunner.Run(Encode.FfmpegEncoder.FfmpegPath, "-version", 3000);
+            if (r.TimedOut) return "timed out";
+            // Support bundle only wants the version line; keep the first non-empty one.
+            foreach (string line in r.StdOut.Split('\n'))
+                if (line.Trim().Length > 0) return line.Trim();
+            return "no output";
         }
         catch (Exception ex)
         {

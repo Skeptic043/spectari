@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Text.Json;
 
 namespace StreamHost.Util;
@@ -160,17 +159,10 @@ public static class StreamDiscovery
         {
             try
             {
-                using var p = Process.Start(new ProcessStartInfo(exe, args)
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true,
-                });
-                if (p is null) continue;
-                string output = p.StandardOutput.ReadToEnd();
-                if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } continue; }
-                if (p.ExitCode == 0 && output.Length > 0) return output;
+                // Drains both pipes and can't block past 5s — a tailscale that
+                // hangs without closing stdout no longer wedges Find Streams.
+                var r = ProcessRunner.Run(exe, args, 5000);
+                if (!r.TimedOut && r.ExitCode == 0 && r.StdOut.Length > 0) return r.StdOut;
             }
             catch { }
         }
