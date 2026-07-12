@@ -104,6 +104,7 @@ public sealed class MainForm : Form
     private readonly Button _watchButton = new() { Text = "Watch streams", Width = 118, Height = 38 };
     // 26px: at 24 the label's descenders (p/y/g) clipped against the border.
     private readonly Button _bundleButton = new() { Text = "Copy log", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
+    private readonly Button _openLogsButton = new() { Text = "Open logs", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
     private readonly Button _fixPortButton = new() { Text = "Fix access (open port)", Width = 142, Height = 26, Visible = false, Anchor = AnchorStyles.Top | AnchorStyles.Right };
     // Short label (the 760px window's status row is crowded); full meaning is in
     // the tooltip. Default off: Tailscale-only is the secure default. Shares the
@@ -158,6 +159,13 @@ public sealed class MainForm : Form
     // keep retrying the holding page instead of giving up for the whole run.
     private readonly System.Windows.Forms.Timer _idleRetryTimer = new() { Interval = 15000 };
     private bool _idleBindFailed;
+
+    // Held so it can be unsubscribed on close: ConsoleMirror.LineWritten is a
+    // STATIC event, and AppRunContext recreates this form, so an anonymous
+    // lambda would root every dead form forever and fan each log line out to all
+    // of them.
+    private Action<string>? _logHandler;
+    private bool _fixingPort; // guards the elevated Fix-access helper against re-entry
 
     public MainForm()
     {
@@ -231,8 +239,9 @@ public sealed class MainForm : Form
 
         // TableLayout keeps the right-side buttons visible regardless of window
         // size / DPI scaling (manual X-positions drifted off the edge).
-        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, BackColor = Bg, ColumnCount = 3, Padding = new Padding(12, 4, 8, 0) };
+        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, BackColor = Bg, ColumnCount = 4, Padding = new Padding(12, 4, 8, 0) };
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         // [Allow LAN][Fix access] ride together in a right-anchored strip so the
@@ -249,9 +258,12 @@ public sealed class MainForm : Form
             "Also allow devices on your local network, not just Tailscale, to reach this stream");
         statusPanel.Controls.Add(_statusLabel, 0, 0);
         statusPanel.Controls.Add(fixAccessGroup, 1, 0);
-        statusPanel.Controls.Add(_bundleButton, 2, 0);
+        statusPanel.Controls.Add(_openLogsButton, 2, 0);
+        statusPanel.Controls.Add(_bundleButton, 3, 0);
+        _toolTip.SetToolTip(_openLogsButton, "Open the folder containing the log file");
         _statusLabel.Anchor = AnchorStyles.Left;
         _fixPortButton.Anchor = AnchorStyles.Right;
+        _openLogsButton.Anchor = AnchorStyles.Right;
         _bundleButton.Anchor = AnchorStyles.Right;
         _statusLabel.ForeColor = Dim;
 
@@ -293,23 +305,45 @@ public sealed class MainForm : Form
         _copyButton.Click += (_, _) => CopyLink(BuildUrl(""));
         _watchButton.Click += (_, _) => OpenWatchWindow();
         _bundleButton.Click += (_, _) => CopySupportBundle();
+        _openLogsButton.Click += (_, _) => OpenLogsFolder();
         _fixPortButton.Click += (_, _) => FixPortAccess();
         _portInput.ValueChanged += (_, _) => { UpdateLinkBox(); RestartIdleServer(); };
         _nameInput.Leave += (_, _) => RestartIdleServer(); // idle stats carry the name
         _statsTimer.Tick += (_, _) => UpdateStatus();
         _idleRetryTimer.Tick += (_, _) => StartIdleServer();
 
-        ConsoleMirror.LineWritten += line =>
+        _logHandler = line =>
         {
             if (IsDisposed) return;
             try { BeginInvoke(() => AppendLog(line)); } catch { }
         };
+        ConsoleMirror.LineWritten += _logHandler;
 
         // Closing the panel stops YOUR stream but leaves an open Watch window
         // alive so you can keep viewing. AppRunContext owns app exit (it ends
         // when the last user window closes) and can bring this panel back on a
         // second launch, so there is no Application.Exit wiring here.
-        FormClosing += (_, _) => { SaveSettings(); _statsTimer.Stop(); _session?.Stop(); StopIdleServer(); };
+        FormClosing += (_, _) =>
+        {
+            // Drop the static-event subscription first so this recreated-then-
+            // closed form doesn't stay rooted receiving log lines forever.
+            if (_logHandler is not null) ConsoleMirror.LineWritten -= _logHandler;
+            SaveSettings();
+            _statsTimer.Stop();
+            // Detach the session before stopping it: Stop() joins the session
+            // thread, whose Stopped callback posts back here via BeginInvoke. With
+            // _session nulled, that callback's ReferenceEquals(_session, session)
+            // guard short-circuits, so it can't re-enter the timers we dispose below.
+            var session = _session;
+            _session = null;
+            session?.Stop();
+            StopIdleServer();
+            // These timers and the tooltip are not in a components container, so
+            // nothing else disposes them.
+            _statsTimer.Dispose();
+            _idleRetryTimer.Dispose();
+            _toolTip.Dispose();
+        };
 
         PopulateSources();
         LoadSettings();
@@ -1005,7 +1039,9 @@ public sealed class MainForm : Form
             _watchForm.Activate();
             return;
         }
-        _watchForm = new WatchForm((int)_portInput.Value);
+        // While live, scan the port actually bound (the box stays editable and can
+        // drift from it); otherwise the input value. Same rule as the viewer link.
+        _watchForm = new WatchForm(_livePort > 0 ? _livePort : (int)_portInput.Value);
         AppRunContext.Current?.Track(_watchForm); // count it toward app lifetime
         _watchForm.Show();
     }
@@ -1031,6 +1067,9 @@ public sealed class MainForm : Form
     /// the stream so the new binding takes effect. One UAC prompt, no file hunting.</summary>
     private void FixPortAccess()
     {
+        // Clicking again while the elevated helper is still running would spawn a
+        // second UAC prompt and helper. Ignore re-entry until this one finishes.
+        if (_fixingPort) return;
         int port = _livePort > 0 ? _livePort : (int)_portInput.Value;
 
         // Don't blow away another app's URL reservation without asking. Reading
@@ -1060,6 +1099,7 @@ public sealed class MainForm : Form
             UseShellExecute = true,
             Verb = "runas",
         };
+        _fixingPort = true; // cleared when the helper finishes (or if we can't report back)
         new Thread(() =>
         {
             int code;
@@ -1080,6 +1120,7 @@ public sealed class MainForm : Form
             {
                 BeginInvoke(() =>
                 {
+                    _fixingPort = false;
                     if (code == 0)
                     {
                         AppendLog($"Port {port} configured.");
@@ -1100,7 +1141,7 @@ public sealed class MainForm : Form
                         AppendLog($"Port setup failed (code {code}). Fallback: run setup.bat {port} as administrator.");
                 });
             }
-            catch { }
+            catch { _fixingPort = false; } // form gone before we could report back — release the guard
         })
         { IsBackground = true, Name = "fix-port" }.Start();
     }
@@ -1155,6 +1196,30 @@ public sealed class MainForm : Form
         catch (Exception ex)
         {
             AppendLog($"Copy log failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>Opens the log file's containing folder in Explorer with the current
+    /// log selected. Falls back to the app-data logs folder when there is no log
+    /// file yet (log-file creation was disabled or failed).</summary>
+    private void OpenLogsFolder()
+    {
+        try
+        {
+            string? path = ConsoleMirror.LogFilePath;
+            if (path is not null && File.Exists(path))
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
+                return;
+            }
+            string folder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "logs");
+            Directory.CreateDirectory(folder);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Could not open the log folder: {ex.Message}");
         }
     }
 
@@ -1287,7 +1352,11 @@ public sealed class MainForm : Form
                 Encoder = ((EncoderChoice)_encoderCombo.SelectedItem!).Value,
             };
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
+            // Write to a sibling temp file, then atomically swap it in, so a crash
+            // mid-write can't leave a truncated/corrupt settings.json behind.
+            string tmp = SettingsPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(tmp, SettingsPath, overwrite: true);
         }
         catch { }
     }

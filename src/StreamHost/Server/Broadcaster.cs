@@ -37,6 +37,11 @@ public sealed class Broadcaster
     public const int DefaultMaxViewers = 24;
     public int MaxViewers { get; init; } = DefaultMaxViewers;
 
+    // Reserved slots = registered clients + in-flight handshakes still waiting on
+    // the init segment. The cap is enforced against THIS (atomically), not the
+    // looser _clients.Count, so a burst of concurrent handshakes can't overshoot.
+    private int _reserved;
+
     public int ViewerCount => _clients.Count;
     public long FragmentsSent;
 
@@ -95,16 +100,25 @@ public sealed class Broadcaster
     {
         var id = Guid.NewGuid();
 
-        // Capacity check first, before any work: a full stream turns extra
-        // viewers away with a clear protocol-level close instead of admitting
-        // them onto an already upload-bound host. A one-off TOCTOU over/under
-        // by one under a connection burst is acceptable; no locking.
-        if (MaxViewers > 0 && _clients.Count >= MaxViewers)
+        // Reserve a slot ATOMICALLY before any work — counting this in-flight
+        // handshake even while it waits on the init segment. Interlocked makes
+        // concurrent handshakes serialize, so a burst can't overshoot MaxViewers
+        // the way the old non-atomic _clients.Count check could. Over the cap:
+        // give the slot straight back and turn the viewer away with a clean
+        // protocol-level close (never registered). Released in the finally on
+        // every exit path. MaxViewers == 0 stays unlimited (no counting).
+        bool reserved = false;
+        if (MaxViewers > 0)
         {
-            try { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "stream is full (viewer limit reached)", ct); } catch { }
-            try { socket.Abort(); } catch { }
-            Console.WriteLine($"[ws] viewer rejected — at capacity ({MaxViewers})");
-            return;
+            if (Interlocked.Increment(ref _reserved) > MaxViewers)
+            {
+                Interlocked.Decrement(ref _reserved);
+                try { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "stream is full (viewer limit reached)", ct); } catch { }
+                try { socket.Abort(); } catch { }
+                Console.WriteLine($"[ws] viewer rejected — at capacity ({MaxViewers})");
+                return;
+            }
+            reserved = true;
         }
 
         // One linked source drives every await below (init wait, hello/init
@@ -191,6 +205,7 @@ public sealed class Broadcaster
             try { socket.Abort(); } catch { }
             if (receiveLoop is not null)
                 await Task.WhenAny(receiveLoop, Task.Delay(1000, CancellationToken.None));
+            if (reserved) Interlocked.Decrement(ref _reserved); // exactly one release per reservation
         }
     }
 }

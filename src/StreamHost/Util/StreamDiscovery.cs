@@ -187,7 +187,10 @@ public static class StreamDiscovery
             var merged = LoadRemembered().Union(liveEndpoints, StringComparer.OrdinalIgnoreCase)
                 .TakeLast(32).ToList();
             Directory.CreateDirectory(Path.GetDirectoryName(RememberedPath)!);
-            File.WriteAllText(RememberedPath, JsonSerializer.Serialize(merged));
+            // Temp-then-swap so a crash mid-write can't corrupt peers.json.
+            string tmp = RememberedPath + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(merged));
+            File.Move(tmp, RememberedPath, overwrite: true);
         }
         catch { }
     }

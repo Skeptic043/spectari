@@ -282,6 +282,8 @@ internal static class Program
         // parser stays a plain flag reader.
         private static int Positive(string flag, int n) =>
             n > 0 ? n : throw new ArgumentException($"{flag} must be greater than 0 (got {n})");
+        private static int NonNegative(string flag, int n) =>
+            n >= 0 ? n : throw new ArgumentException($"{flag} must be 0 or greater, 0 = unlimited (got {n})");
         private static int InRange(string flag, int n, int lo, int hi) =>
             n >= lo && n <= hi ? n : throw new ArgumentException($"{flag} must be between {lo} and {hi} (got {n})");
 
@@ -301,7 +303,7 @@ internal static class Program
                     case "--bitrate": o.BitrateKbps = Int("--bitrate"); break;
                     case "--port": o.Port = InRange("--port", Int("--port"), 1, 65535); break;
                     case "--height": o.OutHeight = Positive("--height", Int("--height")); break;
-                    case "--max-viewers": o.MaxViewers = Int("--max-viewers"); break; // 0 or less = unlimited
+                    case "--max-viewers": o.MaxViewers = NonNegative("--max-viewers", Int("--max-viewers")); break; // 0 = unlimited
                     case "--width": Positive("--width", Int("--width")); break; // legacy no-op; height drives scaling, AR preserved
                     case "--encoder": o.Encoder = Next(); break;
                     case "--list-monitors": o.ListMonitors = true; break;
