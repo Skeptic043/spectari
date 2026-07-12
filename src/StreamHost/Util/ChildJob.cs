@@ -11,16 +11,32 @@ namespace StreamHost.Util;
 public static class ChildJob
 {
     private static readonly IntPtr Handle = Create();
+    private static bool _warned; // one-time honesty warning if orphan protection is off
 
-    /// <summary>Best effort: a process that can't be adopted still runs.</summary>
+    /// <summary>Best effort: a process that can't be adopted still runs. When the
+    /// job couldn't be created, or a process refuses to join it (already in a job
+    /// that forbids nesting), the "a force-quit can never orphan ffmpeg" guarantee
+    /// does not hold for this run — say so once so the log is honest.</summary>
     public static void Adopt(System.Diagnostics.Process process)
     {
         try
         {
-            if (Handle != IntPtr.Zero)
-                AssignProcessToJobObject(Handle, process.Handle);
+            if (Handle == IntPtr.Zero)
+            {
+                WarnOnce("job object could not be created");
+                return;
+            }
+            if (!AssignProcessToJobObject(Handle, process.Handle))
+                WarnOnce($"process {process.Id} could not be adopted (error {Marshal.GetLastWin32Error()})");
         }
-        catch { }
+        catch (Exception ex) { WarnOnce(ex.Message); }
+    }
+
+    private static void WarnOnce(string detail)
+    {
+        if (_warned) return;
+        _warned = true;
+        Console.Error.WriteLine($"[childjob] orphan protection not active: {detail} — a force-quit may leave ffmpeg running");
     }
 
     private static IntPtr Create()
@@ -60,7 +76,7 @@ public static class ChildJob
     [DllImport("kernel32.dll")]
     private static extern bool SetInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint infoLength);
 
-    [DllImport("kernel32.dll")]
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
 
     [DllImport("kernel32.dll")]

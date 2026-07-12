@@ -22,6 +22,7 @@ public sealed class ScreenCapture : ICaptureSource
     private readonly Direct3D11CaptureFramePool _framePool;
     private readonly GraphicsCaptureSession _session;
     private readonly ID3D11Texture2D _latest;
+    private readonly ID3D11RenderTargetView _latestRtv; // lets us black-fill _latest when the source shrinks
     private readonly ID3D11Texture2D _stagingA;
     private readonly ID3D11Texture2D _stagingB;
     private bool _flip;
@@ -115,12 +116,18 @@ public sealed class ScreenCapture : ICaptureSource
             Format = Format.B8G8R8A8_UNorm,
             SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.None,
+            // RenderTarget so a shrunk source can be black-filled (ClearRenderTargetView)
+            // before the smaller region is copied on top — otherwise the uncovered
+            // margins keep the previous, larger frame's pixels.
+            BindFlags = BindFlags.RenderTarget,
             CPUAccessFlags = CpuAccessFlags.None,
         };
         _latest = _device.CreateTexture2D(desc);
+        _latestRtv = _device.CreateRenderTargetView(_latest, null);
 
+        // Staging textures are CPU-readback only and can't carry a bind flag.
         desc.Usage = ResourceUsage.Staging;
+        desc.BindFlags = BindFlags.None;
         desc.CPUAccessFlags = CpuAccessFlags.Read;
         _stagingA = _device.CreateTexture2D(desc);
         _stagingB = _device.CreateTexture2D(desc);
@@ -175,10 +182,21 @@ public sealed class ScreenCapture : ICaptureSource
             using var texture = D3DInterop.GetTexture(frame.Surface);
             lock (_gate)
             {
-                // Region copy: window sizes can be odd, our encode textures are even-aligned.
-                // copyW/copyH are clamped to the source so the region can never exceed it.
-                _context.CopySubresourceRegion(_latest, 0, 0, 0, 0, texture, 0,
-                    new Box(0, 0, 0, copyW, copyH, 1));
+                // A shrunk source only fills the top-left of the fixed-size _latest;
+                // the uncovered right/bottom margins would otherwise keep the previous,
+                // larger frame's pixels (stale content leaking downstream). Clear to
+                // black first whenever the copy won't cover the whole destination —
+                // only then, not on every full-size frame. A zero-sized content frame
+                // (minimized/occluded) has nothing to copy: emit a clean black frame
+                // instead of issuing an invalid zero-extent copy box.
+                bool partial = copyW < Width || copyH < Height || copyW <= 0 || copyH <= 0;
+                if (partial)
+                    _context.ClearRenderTargetView(_latestRtv, new Color4(0f, 0f, 0f, 1f));
+                if (copyW > 0 && copyH > 0)
+                    // Region copy: window sizes can be odd, our encode textures are even-aligned.
+                    // copyW/copyH are clamped to the source so the region can never exceed it.
+                    _context.CopySubresourceRegion(_latest, 0, 0, 0, 0, texture, 0,
+                        new Box(0, 0, 0, copyW, copyH, 1));
             }
             _hasFrame = true;
             Interlocked.Increment(ref _framesArrived);
@@ -270,6 +288,7 @@ public sealed class ScreenCapture : ICaptureSource
         _session.Dispose();
         _framePool.Dispose();
         _frameSignal.Dispose();
+        _latestRtv.Dispose();
         _latest.Dispose();
         _stagingA.Dispose();
         _stagingB.Dispose();
