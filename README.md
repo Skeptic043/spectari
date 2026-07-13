@@ -29,7 +29,9 @@ with privacy addons, which is a big part of why this exists.
   window shows the same grid without a browser, with one-click discovery of
   other StreamHost machines on your Tailscale network.
 - While the app is open but not streaming, the link serves a "not streaming
-  yet" page that connects on its own when you start.
+  yet" page that connects on its own when you start. Viewers who have the
+  page open hear a soft chime when the stream goes live; a bell button on
+  the page turns it off.
 
 ## Requirements
 
@@ -45,8 +47,10 @@ with privacy addons, which is a big part of why this exists.
 2. Pick what to share and a quality preset, click Start streaming.
 3. Click Copy link and send it to whoever is watching.
 4. If someone can't connect, click "Fix access" in the app. It asks for
-   administrator approval once and opens the stream port. setup.bat (run
-   as administrator) does the same thing if you prefer a script.
+   administrator approval once and opens the stream port.
+
+If you prefer a script, running setup.bat as administrator does the same
+thing.
 
 That's it for people on the same network. For watching over the internet,
 see the next section.
@@ -83,12 +87,12 @@ count against your account's user limit.
 
 1. The viewer creates their own free Tailscale account and installs
    Tailscale on their machine.
-2. On your side, open the Tailscale admin console (login.tailscale.com),
-   find the hosting PC under Machines, pick Share from its menu, and send
-   the share invite it gives you to the viewer privately.
+2. You open the Tailscale admin console (login.tailscale.com) and find the
+   hosting PC under Machines. Pick Share from its menu. Send the share
+   invite it gives you to the viewer privately.
 3. The viewer accepts the invite. Your PC now shows up in their Tailscale
    as a shared machine.
-4. Send them the stream link.
+4. You send them the stream link.
 
 Sharing is one-way: they can reach your PC, your PC cannot reach their
 devices. To stop sharing later, remove them from the same menu.
@@ -112,14 +116,23 @@ entirely, which is one reason sharing is the default recommendation.
 Tailscale specifics beyond that (ACLs and so on) are documented by
 Tailscale and out of scope here.
 
+## Watching several streams at once
+
+The grid tiles multiple streams in one browser tab. Open
+`http://<host-address>:<port>/grid` in a browser, then paste each stream's
+full copied link (the key is part of it) into the add bar. Every live
+stream you add shows up as a tile. Viewers using the app's Watch window
+already see this same grid, with a stream finder built in.
+
 ## Security
 
 The model in plain terms, so you can decide whether it fits your use:
 
-- **What can reach the host.** The stream port accepts connections from
-  Tailscale addresses, and from your local network only if you tick "Allow
-  LAN viewers" and run Fix access. There is no public endpoint, no relay,
-  and no port forwarding; nothing is reachable from the public internet.
+- **What can reach the host.** Out of the box, the stream port accepts only
+  Tailscale addresses, and nothing is reachable from the public internet:
+  no public endpoint, no relay, no port forwarding. Local network access is
+  an explicit opt-in. Tick "Allow LAN viewers" and run Fix access, and the
+  port also accepts your local network.
 - **What the viewer key does.** Each stream start generates a random key
   that becomes part of the link. The stream page and the video itself
   require it, so a bare address or an old link does not work. The status
@@ -157,19 +170,26 @@ The model in plain terms, so you can decide whether it fits your use:
   Windows reset, another program, a network profile change). Run Fix
   access again. It configures one port at a time, so after changing the
   port, run it again for the new one; LAN access in particular does not
-  carry over from a previous port.
+  carry over from a previous port. And if you streamed Tailscale-only but
+  now want LAN viewers, tick "Allow LAN viewers" and run Fix access again
+  on the same port.
 - A fullscreen game shows a frozen frame: share the whole monitor instead
   of the window, or set the game to borderless. Some exclusive-fullscreen
   setups can't be captured by anything.
 - Smooth on one browser, choppy on another: check that the browser's
-  hardware acceleration is on. Add ?stats=1 to the link for a diagnostics
-  overlay.
+  hardware acceleration is on. Add `&stats=1` to the end of the link for a
+  diagnostics overlay.
 - Anything else: "Copy log" in the app puts the log plus version, system,
   GPU, and encoder info on the clipboard. Open an issue and paste it.
 
 ## Reading the stats line
 
-While streaming, the log prints a line like this every 10 seconds:
+Viewers can see a diagnostics overlay on their own screen: take the copied
+link and add `&stats=1` to the end. The link already carries `?k=...`, so
+it is an ampersand, not a question mark.
+
+The host-side log tells a similar story. While streaming, it prints a line
+like this every 10 seconds:
 
     [stats] fresh 1499 dup 1 (0.1%), pacing slips 0, source 60 fps, viewers 2
 
@@ -193,6 +213,13 @@ fullscreen on any monitor.
 **Does it stream my voice chat?** No. Audio comes from the one app you
 pick in the Audio dropdown. Discord, or any other app you didn't pick, is
 excluded by construction.
+
+**The stream audio is quiet or silent even though the app is playing.**
+Check that app's volume in the Windows volume mixer. The capture taps the
+app's sound after Windows applies that per-app volume, so turning it down
+or to zero there quiets or mutes the stream too. If you want it quiet on
+your own speakers but audible to viewers, use the app's own in-game or
+in-app volume slider instead.
 
 **How many people can watch?** Your upload bandwidth divided by the
 bitrate, since each viewer gets their own full copy. A 12 Mbps 1080p60

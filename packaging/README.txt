@@ -71,8 +71,8 @@ TIPS
   the browser version, identical playback for everyone), including a
   "Find streams" panel that lists live streams from other StreamHost
   machines on your Tailscale network for one-click adding.
-- Add ?stats=1 to a stream link for a diagnostics overlay.
-- Weak upload? Pick a 30 fps preset.
+- Add &stats=1 to the end of a stream link for a diagnostics overlay
+  (the link already ends in ?k=..., so it's & not ?).
 - The app remembers your source/preset/audio/port between runs.
 - CUSTOM PORT (optional): setup.bat covers port 8093. For another port,
   open Command Prompt in this folder and run:  setup.bat 8094
