@@ -134,6 +134,13 @@ public sealed class MainForm : Form
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
     private bool _retriedCpu;       // guards the one-shot GPU→CPU encoder fallback
     private bool _pendingCpuRetry;  // a fallback restart is scheduled; cancelled if the user stops
+    private System.Windows.Forms.Timer? _cpuRetryTimer; // the 250 ms delay before the CPU restart; stored so close can dispose it
+    // Bumped on every session teardown and on a cancelled retry. The CPU-retry
+    // timer captures it when armed and re-checks it when it fires: a generation,
+    // not a bool, so a tick queued behind a stop/start cycle can't act on the new
+    // one (AppRunContext keeps the process alive for an open Watch window, so a
+    // stale tick could otherwise start an invisible session on a closed form).
+    private int _lifecycleGen;
     private bool _stopping;               // RequestStop sent; waiting for the session's Stopped event
     private SessionConfig? _lastConfig;   // last launched config, reused for the fix-port restart
     private SessionConfig? _pendingSwitch; // queued source switch, launched when Stopped fires
@@ -305,7 +312,7 @@ public sealed class MainForm : Form
         _startButton.Click += (_, _) =>
         {
             // Clicking during a scheduled CPU retry cancels the retry.
-            if (_pendingCpuRetry) { _pendingCpuRetry = false; OnSessionStopped(null); return; }
+            if (_pendingCpuRetry) { CancelCpuRetry(); OnSessionStopped(null); return; }
             if (_session is null) StartStream(); else StopStream();
         };
         _switchButton.Click += (_, _) => ShowSwitchDialog();
@@ -345,6 +352,10 @@ public sealed class MainForm : Form
             _session = null;
             session?.Stop();
             StopIdleServer();
+            // Cancel a scheduled CPU retry so its timer can't fire on this closed
+            // form and start an invisible session (a Watch window may keep the
+            // process, and its message loop, alive after this form is gone).
+            CancelCpuRetry();
             // These timers and the tooltip are not in a components container, so
             // nothing else disposes them.
             _statsTimer.Dispose();
@@ -606,6 +617,7 @@ public sealed class MainForm : Form
                 {
                     if (!ReferenceEquals(_session, session)) return; // superseded by a newer session
                     _session = null;
+                    _lifecycleGen++; // this teardown voids any CPU-retry tick still queued from an earlier one
                     bool userRequested = _stopping;
                     _stopping = false;
 
@@ -634,13 +646,22 @@ public sealed class MainForm : Form
                         if (session.OutputHeight >= 1440)
                             AppendLog($"Warning: libx264 (CPU) may not keep up at {session.OutputWidth}x{session.OutputHeight}@{config.Fps} — lower the Preset if playback is choppy.");
                         var fallback = config with { Encoder = "libx264" };
-                        var t = new System.Windows.Forms.Timer { Interval = 250 };
-                        t.Tick += (_, _) =>
+                        int gen = _lifecycleGen; // the cycle this retry belongs to
+                        _cpuRetryTimer?.Dispose(); // never expected here, but never leak one either
+                        _cpuRetryTimer = new System.Windows.Forms.Timer { Interval = 250 };
+                        _cpuRetryTimer.Tick += (_, _) =>
                         {
-                            t.Stop(); t.Dispose();
+                            _cpuRetryTimer?.Stop();
+                            _cpuRetryTimer?.Dispose();
+                            _cpuRetryTimer = null;
+                            // A stale tick must do nothing: the form may have closed while a
+                            // Watch window kept the loop alive, or a later stop/start cycle
+                            // may have moved on. The generation catches the latter even when
+                            // _pendingCpuRetry has been re-armed by a new cycle.
+                            if (IsDisposed || gen != _lifecycleGen) return;
                             if (_pendingCpuRetry) { _pendingCpuRetry = false; LaunchSession(fallback); }
                         };
-                        t.Start();
+                        _cpuRetryTimer.Start();
                         return;
                     }
                     OnSessionStopped(userRequested ? null : reason);
@@ -675,6 +696,18 @@ public sealed class MainForm : Form
         _statusLabel.Text = "Stopping…";
         _statusLabel.ForeColor = Color.Goldenrod;
         _session.RequestStop();
+    }
+
+    /// <summary>Cancel a scheduled GPU→CPU retry: clear the flag, stop and dispose
+    /// the timer so a queued tick can't fire, and advance the lifecycle generation
+    /// so a tick already dispatched no-ops. Safe to call when nothing is pending.</summary>
+    private void CancelCpuRetry()
+    {
+        _pendingCpuRetry = false;
+        _cpuRetryTimer?.Stop();
+        _cpuRetryTimer?.Dispose();
+        _cpuRetryTimer = null;
+        _lifecycleGen++;
     }
 
     /// <summary>Guided switch: a small popup with just the source, preset, and
@@ -853,11 +886,21 @@ public sealed class MainForm : Form
         if (_session is not null || _idleServer is not null) { _idleRetryTimer.Stop(); return; }
         try
         {
-            _idleServer = new WebServer((int)_portInput.Value, null, null, _nameInput.Text.Trim());
-            _idleCts = new CancellationTokenSource();
-            _ = _idleServer.RunAsync(_idleCts.Token);
+            var server = new WebServer((int)_portInput.Value, null, null, _nameInput.Text.Trim());
+            var cts = new CancellationTokenSource();
+            _idleServer = server;
+            _idleCts = cts;
+            // Observe the run: a fault AFTER a successful bind used to be swallowed,
+            // leaving _idleServer non-null so the guard above refused to rebuild and
+            // the holding page stayed silently dead until restart. The continuation
+            // resets it and kicks the retry path. Bind state is known now (the ctor
+            // bound synchronously), so refresh the link to match localhost vs remote.
+            _ = server.RunAsync(cts.Token).ContinueWith(
+                t => OnIdleServerExited(server, cts.Token, t),
+                CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
             _idleRetryTimer.Stop();
             _idleBindFailed = false;
+            UpdateLinkBox();
         }
         catch (Exception ex)
         {
@@ -892,6 +935,29 @@ public sealed class MainForm : Form
         if (_session is not null || _stopping) return;
         StopIdleServer();
         StartIdleServer();
+    }
+
+    /// <summary>The idle holding page's accept loop ended. Deliberate teardown
+    /// (StopIdleServer/RestartIdleServer cancels the token, or the instance was
+    /// already replaced) is a no-op; a genuine fault after a good bind resets
+    /// _idleServer and arms the retry timer so the existing path rebuilds it.</summary>
+    private void OnIdleServerExited(WebServer server, CancellationToken token, Task run)
+    {
+        if (token.IsCancellationRequested) return; // we asked it to stop
+        try
+        {
+            BeginInvoke(() =>
+            {
+                if (!ReferenceEquals(_idleServer, server)) return; // already replaced
+                AppendLog($"[http] holding page stopped unexpectedly: {run.Exception?.GetBaseException().Message ?? "no error"}");
+                _idleCts?.Cancel();
+                _idleCts = null;
+                _idleServer.Dispose();
+                _idleServer = null;
+                _idleRetryTimer.Start(); // the retry path rebuilds the holding page
+            });
+        }
+        catch { /* form gone: nothing left to rebuild */ }
     }
 
     /// <summary>Rewrites the Native preset entries with the selected source's real
@@ -1045,9 +1111,12 @@ public sealed class MainForm : Form
         // Never hand out a network address the server can't actually answer on.
         // Prefer a Tailscale address (in scope in every firewall config); fall
         // back to a LAN address only if LAN access was actually applied; else
-        // localhost. LocalOnly (no URL ACL) forces localhost regardless.
+        // localhost. LocalOnly (no URL ACL) forces localhost regardless: honor the
+        // live session while streaming, else the holding page's own bind so an
+        // idle localhost-only fallback isn't advertised as a network address.
         string host;
-        if (_session?.LocalOnly == true)
+        bool localOnly = _session is { } live ? live.LocalOnly : _idleServer?.LocalOnly == true;
+        if (localOnly)
             host = "localhost";
         else
         {
@@ -1332,6 +1401,15 @@ public sealed class MainForm : Form
         _session is { } s
             ? $"{s.Description} via {s.ActiveEncoder}, state {s.Broadcaster?.State}, viewers {s.Broadcaster?.ViewerCount}, localOnly {s.LocalOnly}"
             : "not streaming";
+
+    /// <summary>Fatal-crash path only: stop a live session before the process
+    /// exits, so ffmpeg tears down and the port releases instead of being killed
+    /// mid-write. Stop() is bounded (a join with a timeout) so a wedged session
+    /// can't hang the exit. Guarded — a crash handler must never throw again.</summary>
+    internal void StopSessionForShutdown()
+    {
+        try { _session?.Stop(); } catch { }
+    }
 
     private static List<string> GpuAdapters()
     {

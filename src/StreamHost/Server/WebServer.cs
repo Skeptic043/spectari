@@ -22,6 +22,11 @@ public sealed class WebServer : IDisposable
     private readonly string _idleName;
     public string BoundPrefix { get; }
 
+    /// <summary>True when only the localhost prefix could be bound (no URL ACL for
+    /// this port), so this server can answer loopback only. Lets a caller advertise
+    /// a reachable link instead of a network address the server would reject.</summary>
+    public bool LocalOnly => BoundPrefix.Contains("localhost");
+
     private static readonly Dictionary<string, string> ContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         [".html"] = "text/html; charset=utf-8",

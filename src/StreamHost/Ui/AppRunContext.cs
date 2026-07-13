@@ -43,6 +43,14 @@ internal sealed class AppRunContext : ApplicationContext
         catch (Exception ex) { return $"state unavailable ({ex.Message})"; }
     }
 
+    /// <summary>Fatal-crash path: stop a live session gracefully before the process
+    /// exits. The existing hook the crash logger already reaches through, so no new
+    /// registration is needed; guarded so it can't throw a second exception.</summary>
+    public void StopSessionForShutdown()
+    {
+        try { if (_main is { IsDisposed: false } m) m.StopSessionForShutdown(); } catch { }
+    }
+
     private void ShowMain()
     {
         _main = new MainForm();

@@ -94,16 +94,33 @@ internal static class Program
                     System.Windows.Forms.MessageBoxIcon.Error);
             }
             catch { }
+            ExitAfterFatal();
         };
 
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
             LogFatal("background", e.ExceptionObject as Exception, fatal: e.IsTerminating);
+            ExitAfterFatal();
+        };
 
+        // Background task faults stay LOG-ONLY: they don't resume a message loop, so
+        // there's no half-broken app to escape, and killing the process over one
+        // would be a regression.
         TaskScheduler.UnobservedTaskException += (_, e) =>
         {
             LogFatal("task", e.Exception, fatal: false);
             e.SetObserved();
         };
+    }
+
+    /// <summary>Fatal-exception exit (Brian's decision): after the log and dialog,
+    /// don't resume the message loop into a half-broken app. Stop any live session
+    /// gracefully — bounded, so a wedged session can't hang shutdown; ChildJob kills
+    /// ffmpeg with the process regardless — then exit nonzero. Never throws.</summary>
+    private static void ExitAfterFatal()
+    {
+        try { Ui.AppRunContext.Current?.StopSessionForShutdown(); } catch { }
+        Environment.Exit(1); // nonzero: a runtime failure, same code the console path uses for one
     }
 
     /// <summary>Writes one crash record to the log: version, thread, whatever
