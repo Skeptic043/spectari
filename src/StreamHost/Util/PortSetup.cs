@@ -16,6 +16,11 @@ public static class PortSetup
     public const string TailscaleRange = "100.64.0.0/10";
     public const string LanRanges = "192.168.0.0/16,10.0.0.0/8,172.16.0.0/12";
 
+    // Returned by ReadReservationOwner when the URL is reserved but its owner
+    // can't be read (a non-English Windows where the "User:" line is labelled
+    // differently). The interactive setup path treats this as "do not touch".
+    public const string UnknownOwner = "an account StreamHost could not identify";
+
     public static int Run(int port, string? user, bool allowLan)
     {
         // The UAC prompt may elevate as a different account than the one that
@@ -79,6 +84,32 @@ public static class PortSetup
                 string owner = line[(idx + 5)..].Trim();
                 return owner.Length == 0 ? null : owner;
             }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>The account currently granted this URL, with FAIL-CLOSED semantics
+    /// for the interactive (setup.bat) confirm: null when nothing is reserved, the
+    /// owner string when the "User:" line parses, or <see cref="UnknownOwner"/> when
+    /// it is reserved but the owner can't be read. Distinct from ReadReservationUser,
+    /// which returns null-on-unparse because it feeds the restore's `user=` argument
+    /// where a sentinel would corrupt it; here a sentinel is what makes the confirm
+    /// refuse to replace a reservation it can't identify.</summary>
+    public static string? ReadReservationOwner(int port)
+    {
+        try
+        {
+            var r = ProcessRunner.Run("netsh", $"http show urlacl url=http://+:{port}/", 5000);
+            bool reserved = r.StdOut.Contains($"http://+:{port}/", StringComparison.OrdinalIgnoreCase);
+            foreach (var line in r.StdOut.Split('\n'))
+            {
+                int idx = line.IndexOf("User:", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+                string owner = line[(idx + 5)..].Trim();
+                if (owner.Length > 0) return owner;
+            }
+            return reserved ? UnknownOwner : null;
         }
         catch { }
         return null;

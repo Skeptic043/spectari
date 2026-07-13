@@ -1109,7 +1109,8 @@ public sealed class MainForm : Form
     private void FixPortAccess()
     {
         // Clicking again while the elevated helper is still running would spawn a
-        // second UAC prompt and helper. Ignore re-entry until this one finishes.
+        // second UAC prompt and helper on the same URL reservation. Ignore
+        // re-entry until this one has actually exited (see the wait below).
         if (_fixingPort) return;
         int port = _livePort > 0 ? _livePort : (int)_portInput.Value;
 
@@ -1132,22 +1133,49 @@ public sealed class MainForm : Form
             }
         }
 
+        // Snapshot the requested scope BEFORE launching. The helper can run for
+        // many seconds; if the user toggles Allow LAN meanwhile, we must persist
+        // what was actually applied, not the later checkbox state.
+        bool requestedAllowLan = _allowLanCheck.Checked;
+
         AppendLog($"Asking for administrator approval to configure port {port}…");
         string arguments = $"--setup-port {port} --setup-user \"{me}\"";
-        if (_allowLanCheck.Checked) arguments += " --setup-lan";
+        if (requestedAllowLan) arguments += " --setup-lan";
         var psi = new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath, arguments)
         {
             UseShellExecute = true,
             Verb = "runas",
         };
-        _fixingPort = true; // cleared when the helper finishes (or if we can't report back)
+        _fixingPort = true; // cleared only when the helper actually exits
+        // Freeze the scope inputs while a fix is in flight so nothing changes out
+        // from under the snapshot above.
+        _allowLanCheck.Enabled = false;
+        _portInput.Enabled = false;
+        _fixPortButton.Enabled = false;
         new Thread(() =>
         {
             int code;
             try
             {
                 using var p = System.Diagnostics.Process.Start(psi);
-                code = p is not null && p.WaitForExit(60000) ? p.ExitCode : -1;
+                if (p is null) code = -1;
+                else
+                {
+                    // The helper's work (two urlacl reads plus several netsh calls
+                    // and a possible rollback) can outrun this wait. The helper is
+                    // ELEVATED and this UI is not, so we cannot kill it (Process.Kill
+                    // throws Access Denied across the elevation boundary). Giving up
+                    // and clearing the guard here would let a re-click run a SECOND
+                    // helper on the same URL reservation, so instead we keep waiting
+                    // for the real exit and just tell the user it is still going.
+                    if (!p.WaitForExit(60000))
+                    {
+                        try { BeginInvoke(() => AppendLog("Still configuring the port. Waiting for the administrator step to finish…")); }
+                        catch { }
+                        p.WaitForExit(); // unbounded: only a real exit clears the guard
+                    }
+                    code = p.ExitCode;
+                }
             }
             catch (System.ComponentModel.Win32Exception) // UAC declined
             {
@@ -1162,11 +1190,14 @@ public sealed class MainForm : Form
                 BeginInvoke(() =>
                 {
                     _fixingPort = false;
+                    _allowLanCheck.Enabled = true;
+                    _portInput.Enabled = true;
+                    _fixPortButton.Enabled = true;
                     if (code == 0)
                     {
-                        // Record the scope that was actually applied — only on
-                        // success, so a declined/failed attempt never widens it.
-                        _allowLanApplied = _allowLanCheck.Checked;
+                        // Record the scope that was actually applied — the pre-launch
+                        // snapshot, never the live checkbox, and only on success.
+                        _allowLanApplied = requestedAllowLan;
                         SaveSettings();
                         AppendLog($"Port {port} configured.");
                         if (_session is not null && _lastConfig is not null && !_stopping)

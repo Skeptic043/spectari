@@ -29,10 +29,23 @@ internal static class Program
         {
             string? setupUser = null;
             bool allowLan = false; // presence of --setup-lan opts into the LAN ranges
+            bool confirm = false;  // --setup-confirm: prompt on the console before
+                                   // replacing a foreign reservation (setup.bat path)
             for (int i = 2; i < args.Length; i++)
             {
                 if (args[i] == "--setup-user" && i + 1 < args.Length) setupUser = args[++i];
                 else if (args[i] == "--setup-lan") allowLan = true;
+                else if (args[i] == "--setup-confirm") confirm = true;
+            }
+            // setup.bat runs elevated in a visible console and passes --setup-confirm
+            // so a reservation owned by someone else isn't silently destroyed. The
+            // "Fix access" button does its own owner check on the UI thread before
+            // elevating, so its silent relaunch never passes the flag.
+            if (confirm)
+            {
+                EnsureConsole();
+                if (!ConfirmForeignReservation(setupPort))
+                    return 4; // refused / couldn't confirm — nothing changed
             }
             return Util.PortSetup.Run(setupPort, setupUser, allowLan);
         }
@@ -125,6 +138,49 @@ internal static class Program
             Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
         }
         catch { /* no usable console; the log file still records everything */ }
+    }
+
+    /// <summary>Interactive (setup.bat) guard: refuse to replace a URL reservation
+    /// owned by another account without a typed yes. The "Fix access" button makes
+    /// this same check before it elevates; the bat relies on this instead. Fails
+    /// CLOSED — if the owner can't be read, or there's no console to read a reply
+    /// from, it keeps the existing reservation rather than destroying a foreign
+    /// one.</summary>
+    private static bool ConfirmForeignReservation(int port)
+    {
+        // EnsureConsole rebinds stdout/stderr; also rebind stdin so ReadLine can
+        // pick up the elevated console the bat handed us.
+        try { Console.SetIn(new StreamReader(Console.OpenStandardInput())); } catch { }
+
+        string me = $"{Environment.UserDomainName}\\{Environment.UserName}";
+        string? owner = Util.PortSetup.ReadReservationOwner(port);
+
+        // Nothing reserved, or already ours: nothing to confirm.
+        if (owner is null || owner.Equals(me, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // Reserved but unidentifiable: don't gamble on a foreign reservation.
+        if (owner == Util.PortSetup.UnknownOwner)
+        {
+            Console.WriteLine();
+            Console.WriteLine($"  Port {port}'s URL reservation is held by an account StreamHost could not read.");
+            Console.WriteLine("  Not replacing it. Pick a different port instead.");
+            return false;
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  Port {port} is already reserved by another account:");
+        Console.WriteLine($"    {owner}");
+        Console.WriteLine("  Replacing it may break the app that created it.");
+        Console.Write("  Replace it with StreamHost's reservation? [y/N] ");
+        string? answer = Console.ReadLine()?.Trim();
+        if (string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // A no, or no readable input at all: keep what's there.
+        Console.WriteLine("  Keeping the existing reservation. Pick a different port instead.");
+        return false;
     }
 
     private static int RunConsole(string[] args)
@@ -330,6 +386,6 @@ internal static class Program
         Console.WriteLine("           [--height 1080] [--encoder auto|h264_nvenc|h264_amf|h264_qsv|libx264] [--max-viewers N, 0=unlimited]");
         Console.WriteLine("           [--name \"shown to viewers\"] [--audio \"app\"] [--no-audio] [--no-cursor] [--frag-ms N]");
         Console.WriteLine("           [--no-key (viewer links work without ?k=)] [--list-monitors] [--list-windows]");
-        Console.WriteLine("StreamHost --setup-port N [--setup-user \"DOMAIN\\user\"] [--setup-lan]  -> reserve URL + firewall (admin)");
+        Console.WriteLine("StreamHost --setup-port N [--setup-user \"DOMAIN\\user\"] [--setup-lan] [--setup-confirm]  -> reserve URL + firewall (admin)");
     }
 }
