@@ -309,6 +309,14 @@ public sealed class MainForm : Form
         _windowCombo.SelectedIndexChanged += (_, _) => { UpdateNativePresetLabel(); PopulateBitrateOptions(); };
         _monitorCombo.SelectedIndexChanged += (_, _) => { UpdateNativePresetLabel(); PopulateBitrateOptions(); };
         _presetCombo.SelectedIndexChanged += (_, _) => PopulateBitrateOptions();
+        // The bitrate combo is the single source of truth for the chosen tier:
+        // remember every user pick so it survives repopulates (source/preset
+        // changes re-fire PopulateBitrateOptions) and app restarts. Guarded so the
+        // transient -1 during an Items.Clear repopulate can't wipe the saved tier.
+        _bitrateCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_bitrateCombo.SelectedItem is BitrateChoice bc) _savedBitrateTier = bc.Tier;
+        };
         _startButton.Click += (_, _) =>
         {
             // Clicking during a scheduled CPU retry cancels the retry.
@@ -717,7 +725,16 @@ public sealed class MainForm : Form
     private void ShowSwitchDialog()
     {
         if (_stopping) return;
-        PopulateSources(); // fresh window/monitor lists for the popup
+
+        // Enumerate fresh source lists for the popup WITHOUT touching the main
+        // controls, so pressing Cancel leaves the main window's selection exactly
+        // as it was. The main lists are refreshed only on OK, below.
+        uint ownPid = (uint)Environment.ProcessId;
+        var dlgWindows = WindowEnumerator.GetWindows()
+            .Where(w => w.Pid != ownPid)
+            .OrderBy(w => w.ProcessName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var dlgMonitors = MonitorEnumerator.GetMonitors();
 
         using var dlg = new Form
         {
@@ -741,15 +758,34 @@ public sealed class MainForm : Form
         var bitrateCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
         var audioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
 
-        // Mirror the main combos item-for-item so OK can copy indexes back.
-        foreach (object it in _windowCombo.Items) winCombo.Items.Add(it);
-        foreach (object it in _monitorCombo.Items) monCombo.Items.Add(it);
+        // Build the dialog combos off the dialog's own fresh lists (never the main
+        // controls). Same item shapes as PopulateWindows/PopulateMonitors so the OK
+        // path can translate picks back by name/index/key.
+        foreach (var w in dlgWindows) winCombo.Items.Add($"{w.ProcessName} - {Truncate(w.Title, 58)}");
+        foreach (var m in dlgMonitors) monCombo.Items.Add($"{m.DeviceName}  {m.Width}x{m.Height}{(m.IsPrimary ? "  (primary)" : "")}");
         foreach (object it in _presetCombo.Items) presetCombo.Items.Add(it);
-        foreach (object it in _audioCombo.Items) audioCombo.Items.Add(it);
-        winCombo.SelectedIndex = _windowCombo.SelectedIndex;
-        monCombo.SelectedIndex = _monitorCombo.SelectedIndex;
+        audioCombo.Items.Add("No audio");
+        audioCombo.Items.Add(rbWin.Checked ? "Captured window's audio" : "No audio (monitor share: pick an app below)");
+        foreach (var w in dlgWindows) audioCombo.Items.Add($"{w.ProcessName} - {Truncate(w.Title, 40)}");
+
+        // Preselect to the current main selection, matched by name (window),
+        // index (monitor/preset), and key (audio) - the same shallow matching the
+        // OK path uses.
+        string? curWinProc = _windowCombo.SelectedIndex >= 0 && _windowCombo.SelectedIndex < _windows.Count
+            ? _windows[_windowCombo.SelectedIndex].ProcessName : null;
+        int wsel = curWinProc is null ? -1
+            : dlgWindows.FindIndex(w => w.ProcessName.Equals(curWinProc, StringComparison.OrdinalIgnoreCase));
+        winCombo.SelectedIndex = wsel >= 0 ? wsel : (dlgWindows.Count > 0 ? 0 : -1);
+        monCombo.SelectedIndex = _monitorCombo.SelectedIndex >= 0 && _monitorCombo.SelectedIndex < dlgMonitors.Count
+            ? _monitorCombo.SelectedIndex : (dlgMonitors.Count > 0 ? 0 : -1);
         presetCombo.SelectedIndex = _presetCombo.SelectedIndex;
-        audioCombo.SelectedIndex = _audioCombo.SelectedIndex;
+        string curAudioKey = SelectedAudioKey();
+        audioCombo.SelectedIndex = curAudioKey switch
+        {
+            "none" => 0,
+            "window" => 1,
+            _ => dlgWindows.FindIndex(w => w.ProcessName.Equals(curAudioKey, StringComparison.OrdinalIgnoreCase)) is int ai && ai >= 0 ? ai + 2 : 1,
+        };
         // The dialog's Native entries track ITS pickers, same as the main window's.
         void UpdateDlgNativeLabel()
         {
@@ -759,7 +795,7 @@ public sealed class MainForm : Form
                 int sel = presetCombo.SelectedIndex;
                 presetCombo.Items[idx] = Presets[idx] with
                 {
-                    Label = ComputeNativeLabel(Presets[idx].Fps, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex),
+                    Label = ComputeNativeLabel(Presets[idx].Fps, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex, dlgWindows, dlgMonitors),
                 };
                 presetCombo.SelectedIndex = sel;
             }
@@ -770,7 +806,7 @@ public sealed class MainForm : Form
             if (presetCombo.SelectedItem is not Preset p) return;
             string keep = (bitrateCombo.SelectedItem as BitrateChoice)?.Tier
                           ?? (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med";
-            var choices = BuildBitrateChoices(p, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex);
+            var choices = BuildBitrateChoices(p, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex, dlgWindows, dlgMonitors);
             bitrateCombo.BeginUpdate();
             bitrateCombo.Items.Clear();
             foreach (var c in choices) bitrateCombo.Items.Add(c);
@@ -821,12 +857,31 @@ public sealed class MainForm : Form
 
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
+        // OK only: translate the dialog's picks onto the main controls. Refresh the
+        // main lists now (the one time this method mutates them) so the picked
+        // source resolves against a current enumeration, then match by name (window),
+        // index (monitor/preset), and key (audio) - deep HWND/device matching is out
+        // of scope. Cancel returned above without touching anything.
         _rbWindow.Checked = rbWin.Checked;
         _rbMonitor.Checked = rbMon.Checked;
-        if (winCombo.SelectedIndex >= 0) _windowCombo.SelectedIndex = winCombo.SelectedIndex;
-        if (monCombo.SelectedIndex >= 0) _monitorCombo.SelectedIndex = monCombo.SelectedIndex;
+        PopulateSources();
+        if (winCombo.SelectedIndex >= 0 && winCombo.SelectedIndex < dlgWindows.Count)
+        {
+            string proc = dlgWindows[winCombo.SelectedIndex].ProcessName;
+            int mi = _windows.FindIndex(w => w.ProcessName.Equals(proc, StringComparison.OrdinalIgnoreCase));
+            if (mi >= 0) _windowCombo.SelectedIndex = mi;
+        }
+        if (monCombo.SelectedIndex >= 0 && monCombo.SelectedIndex < _monitorCombo.Items.Count)
+            _monitorCombo.SelectedIndex = monCombo.SelectedIndex;
         if (presetCombo.SelectedIndex >= 0) _presetCombo.SelectedIndex = presetCombo.SelectedIndex;
-        if (audioCombo.SelectedIndex >= 0) _audioCombo.SelectedIndex = audioCombo.SelectedIndex;
+        string pickedAudioKey = audioCombo.SelectedIndex switch
+        {
+            0 => "none",
+            1 => "window",
+            > 1 when audioCombo.SelectedIndex - 2 < dlgWindows.Count => dlgWindows[audioCombo.SelectedIndex - 2].ProcessName,
+            _ => "window",
+        };
+        SelectAudioByKey(pickedAudioKey);
         // Writing the source/preset back above repopulated the main bitrate combo;
         // now apply the tier the user picked in the dialog.
         if ((bitrateCombo.SelectedItem as BitrateChoice)?.Tier is { } tier)
@@ -968,7 +1023,7 @@ public sealed class MainForm : Form
         for (int idx = 0; idx < Presets.Length && idx < _presetCombo.Items.Count; idx++)
         {
             if (Presets[idx].Height != 0) continue;
-            string label = ComputeNativeLabel(Presets[idx].Fps, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex);
+            string label = ComputeNativeLabel(Presets[idx].Fps, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex, _windows, _monitors);
             if (_presetCombo.Items[idx] is Preset p && p.Label == label) continue;
             int sel = _presetCombo.SelectedIndex;
             _presetCombo.Items[idx] = Presets[idx] with { Label = label };
@@ -976,9 +1031,10 @@ public sealed class MainForm : Form
         }
     }
 
-    private string ComputeNativeLabel(int fps, bool windowChecked, int windowIdx, int monitorIdx)
+    private string ComputeNativeLabel(int fps, bool windowChecked, int windowIdx, int monitorIdx,
+        List<WindowDescription> windows, List<MonitorDescription> monitors)
     {
-        var (w, h) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx);
+        var (w, h) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx, windows, monitors);
         return w > 0 && h > 0 ? $"Native · {fps} fps  ({w}x{h})" : $"Native · {fps} fps  (source size)";
     }
 
@@ -1000,27 +1056,29 @@ public sealed class MainForm : Form
 
     /// <summary>Pixel size of the selected source: monitor resolution, or the
     /// window's visible bounds. (0,0) when nothing is resolvable.</summary>
-    private (int W, int H) SelectedSourceSize(bool windowChecked, int windowIdx, int monitorIdx)
+    private (int W, int H) SelectedSourceSize(bool windowChecked, int windowIdx, int monitorIdx,
+        List<WindowDescription> windows, List<MonitorDescription> monitors)
     {
         if (windowChecked)
         {
-            if (windowIdx < 0 || windowIdx >= _windows.Count) return (0, 0);
-            IntPtr hwnd = _windows[windowIdx].Handle;
+            if (windowIdx < 0 || windowIdx >= windows.Count) return (0, 0);
+            IntPtr hwnd = windows[windowIdx].Handle;
             if (DwmGetWindowAttribute(hwnd, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out RECT r, Marshal.SizeOf<RECT>()) != 0)
                 GetWindowRect(hwnd, out r);
             return (r.Right - r.Left, r.Bottom - r.Top);
         }
-        if (monitorIdx >= 0 && monitorIdx < _monitors.Count)
-            return (_monitors[monitorIdx].Width, _monitors[monitorIdx].Height);
+        if (monitorIdx >= 0 && monitorIdx < monitors.Count)
+            return (monitors[monitorIdx].Width, monitors[monitorIdx].Height);
         return (0, 0);
     }
 
     /// <summary>The Low/Medium/High options for a preset applied to a source:
     /// the numbers come from the actual output size (pixel area, so a tall
     /// portrait window is billed by its real pixel count, not its height).</summary>
-    private List<BitrateChoice> BuildBitrateChoices(Preset preset, bool windowChecked, int windowIdx, int monitorIdx)
+    private List<BitrateChoice> BuildBitrateChoices(Preset preset, bool windowChecked, int windowIdx, int monitorIdx,
+        List<WindowDescription> windows, List<MonitorDescription> monitors)
     {
-        var (srcW, srcH) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx);
+        var (srcW, srcH) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx, windows, monitors);
         if (srcH <= 0) (srcW, srcH) = (1920, 1080); // nothing resolved yet
         int outH = preset.Height > 0 && preset.Height < srcH ? preset.Height : srcH;
         int outW = (int)Math.Round((double)srcW * outH / srcH);
@@ -1040,13 +1098,15 @@ public sealed class MainForm : Form
     private void PopulateBitrateOptions()
     {
         if (_presetCombo.SelectedItem is not Preset preset) return;
-        string keepTier = (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? _savedBitrateTier;
-        var choices = BuildBitrateChoices(preset, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex);
+        var choices = BuildBitrateChoices(preset, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex, _windows, _monitors);
         _bitrateCombo.BeginUpdate();
         _bitrateCombo.Items.Clear();
         foreach (var c in choices) _bitrateCombo.Items.Add(c);
         _bitrateCombo.EndUpdate();
-        int idx = choices.FindIndex(c => c.Tier == keepTier);
+        // Reselect from _savedBitrateTier, not the dropdown's pre-clear value: the
+        // tiers are always Low/Medium/High so the saved pick always resolves, and a
+        // saved low/high loaded before the first populate is no longer lost.
+        int idx = choices.FindIndex(c => c.Tier == _savedBitrateTier);
         _bitrateCombo.SelectedIndex = idx >= 0 ? idx : 1; // Medium
     }
 
