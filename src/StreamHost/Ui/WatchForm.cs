@@ -27,6 +27,13 @@ public sealed class WatchForm : Form
     private bool _webReady;
     private bool _searchedOnce;
 
+    // Saved chrome so an HTML fullscreen request (the viewer's Fullscreen button)
+    // can take over the whole window and then restore exactly what was there.
+    private bool _isFullScreen;
+    private FormBorderStyle _savedBorder;
+    private FormWindowState _savedState;
+    private Rectangle _savedBounds;
+
     private readonly Label _fallback = new()
     {
         Dock = DockStyle.Fill,
@@ -68,12 +75,25 @@ public sealed class WatchForm : Form
         {
             string dataDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "webview2");
-            var env = await CoreWebView2Environment.CreateAsync(null, dataDir);
+            // Let the soft go-live chime sound without a click: Chromium's autoplay
+            // policy would otherwise block a fresh AudioContext in this embedded
+            // browser. This flag affects only the Watch window, never real browsers.
+            var opts = new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments = "--autoplay-policy=no-user-gesture-required",
+            };
+            var env = await CoreWebView2Environment.CreateAsync(null, dataDir, opts);
             await _web.EnsureCoreWebView2Async(env);
             _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "streamhost.local", Path.Combine(AppContext.BaseDirectory, "wwwroot"),
                 CoreWebView2HostResourceAccessKind.Allow);
             _web.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            // An HTML element going fullscreen only fills the WebView2 control, so
+            // inside this window the viewer's Fullscreen button would read as a mere
+            // maximize. Mirror it onto the Form: borderless-maximized on entry,
+            // exact restore on exit (Esc and the page's own toggle arrive here too).
+            _web.CoreWebView2.ContainsFullScreenElementChanged += (_, _) =>
+                SetWindowFullScreen(_web.CoreWebView2.ContainsFullScreenElement);
             // "open ↗" tiles and any target=_blank go to the default browser
             // instead of spawning bare WebView2 popup windows.
             _web.CoreWebView2.NewWindowRequested += (_, e) =>
@@ -120,6 +140,33 @@ public sealed class WatchForm : Form
             _fallback.Text = "The in-app viewer needs the WebView2 runtime (part of Windows 10/11 updates).\n" +
                              "Open stream links in a browser instead, or install the runtime from Microsoft.";
             _fallback.Visible = true;
+        }
+    }
+
+    /// <summary>Drives the whole window in and out of borderless fullscreen to
+    /// match an HTML fullscreen element. The event can fire while already in the
+    /// target state, so the guard makes repeats a no-op. Entry resets to Normal
+    /// first so an already-maximized window still expands past the taskbar, and
+    /// exit restores the saved state (maximized stays maximized) and, if it was a
+    /// normal window, its exact bounds. Raised on the UI thread by WebView2.</summary>
+    private void SetWindowFullScreen(bool on)
+    {
+        if (on == _isFullScreen) return;
+        _isFullScreen = on;
+        if (on)
+        {
+            _savedBorder = FormBorderStyle;
+            _savedState = WindowState;
+            _savedBounds = Bounds;
+            WindowState = FormWindowState.Normal;   // so None + Maximized recomputes true screen bounds
+            FormBorderStyle = FormBorderStyle.None;  // border before state avoids the taskbar-overlap quirk
+            WindowState = FormWindowState.Maximized;
+        }
+        else
+        {
+            WindowState = _savedState;
+            FormBorderStyle = _savedBorder;
+            if (_savedState == FormWindowState.Normal) Bounds = _savedBounds;
         }
     }
 

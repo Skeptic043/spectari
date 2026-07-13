@@ -83,6 +83,7 @@
   <span class="spacer"></span>
   <button id="layoutBtn" class="ghost" title="Switch between side-by-side and stacked streams">Stack vertically</button>
   <button id="hideBtn" class="ghost" title="Hide this bar">Hide bar</button>
+  <button id="chimeBtn" class="ghost" title="Go-live chime on/off">&#128276;</button>
   <div id="finder">
     <button id="findBtn" class="ghost" title="Search the tailnet for live streams">&#8635; Find streams</button>
     <span id="findStatus" class="hint"></span>
@@ -101,6 +102,46 @@ const KEY = "streamhost_grid_urls";
 
 function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } }
 function save(urls) { localStorage.setItem(KEY, JSON.stringify(urls)); }
+
+// Soft go-live chime, generated with Web Audio (no binary asset). Same on/off
+// key and sound as the viewer page; absent = on. This fires only for a tile that
+// embeds straight into a LIVE stream — an unreachable host that comes back up, or
+// a live link just added — because that inner page loads already-live and stays
+// silent. A tile embedded while idle chimes from the inner page instead, so
+// exactly one layer sounds per transition.
+const CHIME_KEY = "chimeOn";
+function chimeEnabled() { return localStorage.getItem(CHIME_KEY) !== "0"; }
+let audioCtx = null;
+function playChime() {
+  if (!chimeEnabled()) return;
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+    const now = audioCtx.currentTime;
+    // Two soft sine notes a fifth apart (C5 then G5), quick attack, gentle decay,
+    // low peak so it reads as a polite tap rather than an alert. Under 0.6s total.
+    for (const [freq, at] of [[523.25, 0], [783.99, 0.12]]) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const start = now + at;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.11, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + 0.4);
+    }
+  } catch (_) { /* autoplay blocked or no Web Audio: stay silent, no fallback */ }
+}
+const chimeBtn = document.getElementById("chimeBtn");
+function syncChimeBtn() { chimeBtn.textContent = chimeEnabled() ? "🔔" : "🔕"; }
+chimeBtn.onclick = () => {
+  localStorage.setItem(CHIME_KEY, chimeEnabled() ? "0" : "1");
+  syncChimeBtn();
+};
+syncChimeBtn();
 
 function normalize(u) {
   u = u.trim();
@@ -257,6 +298,10 @@ function poll() {
         if (!tile.querySelector("iframe")) {
           embed(tile);
           tile.dataset.down = 0;
+          // Only the live embed chimes here: the inner page loads already-live
+          // and stays silent. An idle embed makes no sound now; its inner page
+          // chimes when it goes live.
+          if (live) playChime();
         }
         // An already-embedded iframe that sat on the browser's own error page
         // (host was down when it loaded, no script of ours runs there) gets
