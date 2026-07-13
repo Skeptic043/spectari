@@ -138,6 +138,9 @@ public sealed class StreamSession
     private static extern uint SetThreadExecutionState(uint flags);
     private const uint ES_CONTINUOUS = 0x80000000, ES_SYSTEM_REQUIRED = 0x1, ES_DISPLAY_REQUIRED = 0x2;
 
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
+
     private string Run()
     {
         // No sleeping mid-stream: system stays up and the captured display stays on.
@@ -149,6 +152,15 @@ public sealed class StreamSession
     private string RunCore()
     {
         var ct = _cts.Token;
+        // Guard the race the MainForm pre-check can't cover: the window can close
+        // between that check and here. A dead HWND makes the capture backend throw
+        // a raw ArgumentException; surface one plain line through the normal stop
+        // path instead of a stack dump.
+        if (_config.WindowHandle != IntPtr.Zero && !IsWindow(_config.WindowHandle))
+        {
+            Console.Error.WriteLine("[capture] the selected window no longer exists; pick another source.");
+            return "the selected window no longer exists";
+        }
         // Monitor shares are self-managing (desktop duplication by default,
         // standard capture as fallback and for window shares — see
         // AutoMonitorCapture). --compat-capture forces duplication-only,

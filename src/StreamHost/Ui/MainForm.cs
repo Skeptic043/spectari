@@ -182,6 +182,12 @@ public sealed class MainForm : Form
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
+    // A picked window can close before the stream launches (right after the Switch
+    // dialog's OK, or the main selection went stale). Validate the handle at the
+    // start boundary so the session doesn't hand a dead HWND to the capture backend.
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hwnd);
+
     // The holding page: served while the app is open but no stream is running,
     // so links opened early (or left over from a previous stream) show
     // "not streaming yet" and connect themselves once a stream starts.
@@ -271,7 +277,9 @@ public sealed class MainForm : Form
 
         // TableLayout keeps the right-side buttons visible regardless of window
         // size / DPI scaling (manual X-positions drifted off the edge).
-        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 32, BackColor = Bg, ColumnCount = 4, Padding = new Padding(12, 4, 8, 0) };
+        // Height/bottom padding leave room for the status text's descenders and a
+        // couple px of gap above the log box (the amber LIVE line sat flush to it).
+        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Bg, ColumnCount = 4, Padding = new Padding(12, 4, 8, 2) };
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -599,6 +607,12 @@ public sealed class MainForm : Form
         {
             if (_windowCombo.SelectedIndex < 0) { AppendLog("No window selected."); return null; }
             var w = _windows[_windowCombo.SelectedIndex];
+            if (!IsWindow(w.Handle))
+            {
+                AppendLog("The selected window no longer exists. Pick another source.");
+                PopulateSources();
+                return null;
+            }
             windowHandle = w.Handle;
             sourceName = $"window '{w.Title}' [{w.ProcessName}]";
         }
