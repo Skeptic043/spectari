@@ -241,13 +241,14 @@ public sealed class FfmpegEncoder : IDisposable
     private static readonly object _buildInfoLogLock = new();
     private static bool _buildInfoLogged;
 
-    /// <summary>Logs the exact bundled ffmpeg (version, full build configuration,
-    /// short hash) to the Console once per process, so the on-disk log and the
-    /// support bundle capture which binary actually ran. Called at the top of the
-    /// ctor; the once-guard means fallback restarts (a fresh encoder per attempt)
-    /// don't spam the log. Best-effort: FfmpegBuildInfo already degrades to notes
-    /// rather than throwing, and this whole method is wrapped so it can never throw
-    /// out of the ctor.</summary>
+    /// <summary>Logs the exact bundled ffmpeg (version, short hash) to the Console
+    /// once per process, so the on-disk log and the support bundle capture which
+    /// binary actually ran. The full build configuration is deliberately not logged
+    /// (it is hundreds of characters); the support bundle and build-info.txt read it
+    /// from FfmpegBuildInfo directly. Called at the top of the ctor; the once-guard
+    /// means fallback restarts (a fresh encoder per attempt) don't spam the log.
+    /// Best-effort: FfmpegBuildInfo already degrades to notes rather than throwing,
+    /// and this whole method is wrapped so it can never throw out of the ctor.</summary>
     public static void LogBuildInfoOnce()
     {
         lock (_buildInfoLogLock)
@@ -257,9 +258,8 @@ public sealed class FfmpegEncoder : IDisposable
         }
         try
         {
-            var (version, buildconf, sha256) = FfmpegBuildInfo();
+            var (version, _, sha256) = FfmpegBuildInfo();
             Console.WriteLine($"[encoder] ffmpeg {version}");
-            Console.WriteLine($"[encoder] ffmpeg buildconf: {buildconf}");
             Console.WriteLine($"[encoder] ffmpeg sha256: {sha256}");
         }
         catch { }
