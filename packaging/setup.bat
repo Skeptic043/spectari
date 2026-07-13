@@ -1,12 +1,15 @@
 @echo off
+setlocal
 REM StreamHost one-time setup. Usage: setup.bat [port]   (default 8093)
-REM StreamHost serves the stream to viewers' browsers on this port; this
-REM script lets Windows accept those incoming connections. It reserves the
-REM stream URL for this user and adds a firewall rule scoped to Tailscale
-REM (100.64.0.0/10) by default. It can also cover your private LAN address
-REM ranges if you answer yes to the LAN prompt below.
+REM
+REM This is the manual fallback for the app's "Fix access" button. It just
+REM elevates and hands the work to StreamHost.exe, which reserves the stream
+REM URL for this user and opens the firewall to Tailscale (100.64.0.0/10).
+REM
+REM LAN viewers are not offered here. Turn that on inside the app: tick
+REM "Allow LAN viewers" next to "Fix access", then click Fix access.
+REM
 REM Right-click this file and select "Run as administrator".
-REM This is the manual fallback for the app's "Fix access" button.
 
 net session >nul 2>&1
 if %errorlevel% neq 0 (
@@ -18,58 +21,46 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-set PORT=%~1
-if "%PORT%"=="" set PORT=8093
+set "PORT=%~1"
+if "%PORT%"=="" set "PORT=8093"
 
-echo This opens the port StreamHost uses to serve your stream to viewers'
-echo browsers, so friends on Tailscale (and, if you allow it, your LAN)
-echo can connect to it.
-
-REM If some OTHER software already reserved this port's URL, don't silently
-REM delete it. Show it and ask.
-netsh http show urlacl url=http://+:%PORT%/ | findstr /i "Reserved" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo An existing URL reservation was found for port %PORT%:
-    netsh http show urlacl url=http://+:%PORT%/ | findstr /i "Reserved User"
-    choice /m "Replace it with StreamHost's reservation"
-    if errorlevel 2 (
-        echo   Keeping the existing reservation. Pick a different port instead.
-        pause
-        exit /b 1
-    )
-)
-
-REM Firewall scope. Tailscale-only is the secure default; opt in to the LAN
-REM ranges only if asked for.
-set RANGES=100.64.0.0/10
-choice /m "Allow local network (LAN) viewers in addition to Tailscale"
-if not errorlevel 2 set RANGES=100.64.0.0/10,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12
-
-echo Reserving http://+:%PORT%/ for %USERNAME%...
-netsh http delete urlacl url=http://+:%PORT%/ >nul 2>&1
-netsh http add urlacl url=http://+:%PORT%/ user="%USERDOMAIN%\%USERNAME%" >nul
-if %errorlevel% neq 0 (
-    echo   FAILED: could not reserve the URL. Include this window's text when reporting.
-    pause
-    exit /b 1
-)
-
-echo Adding firewall rule for port %PORT% (allowed ranges: %RANGES%)...
-netsh advfirewall firewall delete rule name="StreamHost %PORT%" >nul 2>&1
-netsh advfirewall firewall add rule name="StreamHost %PORT%" dir=in action=allow protocol=TCP localport=%PORT% remoteip=%RANGES% >nul
-if %errorlevel% neq 0 (
-    echo   FAILED: could not add the firewall rule.
-    echo   LAN access was not applied. Restoring a Tailscale-only rule so you
-    echo   are not left without one.
-    netsh advfirewall firewall add rule name="StreamHost %PORT%" dir=in action=allow protocol=TCP localport=%PORT% remoteip=100.64.0.0/10 >nul
-    echo   Include this window's text when reporting.
+set "EXE=%~dp0StreamHost.exe"
+if not exist "%EXE%" (
+    echo.
+    echo   Could not find StreamHost.exe next to this script.
+    echo   Keep setup.bat in the same folder as StreamHost.exe and run it there.
+    echo.
     pause
     exit /b 1
 )
 
 echo.
-echo   Setup complete for port %PORT%. Both steps verified.
-echo   Re-running this script is safe; it replaces its own entries.
-echo   To use a different port: setup.bat 8094
+echo Opening port %PORT% for StreamHost so viewers on Tailscale can connect...
+echo.
+
+REM StreamHost.exe is a GUI-subsystem program, so cmd would not wait for it on
+REM its own. "start /wait" waits for it and reports its exit code in ERRORLEVEL.
+REM --setup-confirm makes it ask before replacing a reservation owned by someone
+REM else. Capture the code right away, before anything else touches ERRORLEVEL.
+start "" /wait "%EXE%" --setup-port %PORT% --setup-confirm
+set "RC=%ERRORLEVEL%"
+
+echo.
+if "%RC%"=="0" (
+    echo   Setup complete for port %PORT%. Viewers on Tailscale can now connect.
+    echo   Re-running this is safe. For a different port: setup.bat 8094
+) else if "%RC%"=="4" (
+    echo   No change made. The existing URL reservation for port %PORT% was kept.
+    echo   Pick a different port instead: setup.bat 8094
+) else if "%RC%"=="2" (
+    echo   FAILED: could not reserve the stream URL for port %PORT%.
+    echo   Include this window's text when reporting.
+) else if "%RC%"=="3" (
+    echo   FAILED: could not add the firewall rule for port %PORT%.
+    echo   Include this window's text when reporting.
+) else (
+    echo   FAILED: port setup did not complete. Exit code %RC%.
+    echo   Include this window's text when reporting.
+)
 echo.
 pause
