@@ -155,51 +155,66 @@ function normalize(u) {
   } catch { return null; }
 }
 
+function updateGridVisibility() {
+  const hasTiles = grid.children.length > 0;
+  empty.style.display = hasTiles ? "none" : "flex";
+  grid.style.display = hasTiles ? "grid" : "none";
+}
+
+function createTile(url) {
+  const tile = document.createElement("div");
+  tile.className = "tile";
+  tile.dataset.url = url;
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.innerHTML = `<span class="dot"></span><span class="name">…</span><span class="state">connecting</span><span class="spacer"></span>`;
+
+  const moveL = document.createElement("button");
+  moveL.textContent = "◀";
+  moveL.title = "Move earlier (left/up)";
+  moveL.onclick = () => move(tile, -1);
+  bar.appendChild(moveL);
+
+  const moveR = document.createElement("button");
+  moveR.textContent = "▶";
+  moveR.title = "Move later (right/down)";
+  moveR.onclick = () => move(tile, +1);
+  bar.appendChild(moveR);
+
+  const open = document.createElement("a");
+  open.className = "open";
+  open.textContent = "open ↗";
+  open.href = url;
+  open.target = "_blank";
+  open.rel = "noopener noreferrer";
+  bar.appendChild(open);
+
+  const remove = document.createElement("button");
+  remove.textContent = "✕";
+  remove.title = "Remove";
+  remove.onclick = () => removeTile(tile);
+  bar.appendChild(remove);
+
+  // The iframe is NOT embedded here — pollTile() adds it only once the
+  // endpoint validates as a StreamHost. Until then the tile shows just its bar.
+  tile.appendChild(bar);
+  return tile;
+}
+
+function removeTile(tile) {
+  if (tile.parentElement !== grid) return;
+  const url = tile.dataset.url;
+  save(load().filter(u => u !== url));
+  tile.remove();
+  updateGridVisibility();
+  fixSpans();
+}
+
 function render() {
   const urls = load();
-  grid.innerHTML = "";
-  empty.style.display = urls.length ? "none" : "flex";
-  grid.style.display = urls.length ? "grid" : "none";
-
-  for (const url of urls) {
-    const tile = document.createElement("div");
-    tile.className = "tile";
-    tile.dataset.url = url;
-
-    const bar = document.createElement("div");
-    bar.className = "bar";
-    bar.innerHTML = `<span class="dot"></span><span class="name">…</span><span class="state">connecting</span><span class="spacer"></span>`;
-
-    const moveL = document.createElement("button");
-    moveL.textContent = "◀";
-    moveL.title = "Move earlier (left/up)";
-    moveL.onclick = () => move(url, -1);
-    bar.appendChild(moveL);
-
-    const moveR = document.createElement("button");
-    moveR.textContent = "▶";
-    moveR.title = "Move later (right/down)";
-    moveR.onclick = () => move(url, +1);
-    bar.appendChild(moveR);
-
-    const open = document.createElement("a");
-    open.textContent = "open ↗";
-    open.href = url;
-    open.target = "_blank";
-    open.rel = "noopener noreferrer";
-    bar.appendChild(open);
-
-    const remove = document.createElement("button");
-    remove.textContent = "✕";
-    remove.title = "Remove";
-    remove.onclick = () => { save(load().filter(u => u !== url)); render(); };
-    bar.appendChild(remove);
-
-    // The iframe is NOT embedded here — poll() adds it only once the endpoint
-    // validates as a StreamHost. Until then the tile shows just its bar.
-    tile.appendChild(bar);
-    grid.appendChild(tile);
-  }
+  grid.replaceChildren(...urls.map(createTile));
+  updateGridVisibility();
   fixSpans();
   poll();
 }
@@ -244,10 +259,37 @@ window.addStream = function (u) {
   const urls = load();
   const origin = new URL(n).origin;
   const i = urls.findIndex(x => { try { return new URL(x).origin === origin; } catch { return false; } });
-  if (i >= 0) { if (urls[i] === n) return true; urls[i] = n; }
-  else urls.push(n);
-  save(urls);
-  render();
+  if (i >= 0) {
+    if (urls[i] === n) return true;
+    urls[i] = n;
+    save(urls);
+    const tile = [...grid.children].find(t => {
+      try { return new URL(t.dataset.url).origin === origin; } catch { return false; }
+    });
+    if (tile) {
+      tile.dataset.url = n;
+      tile.querySelector("a.open").href = n;
+      const frame = tile.querySelector("iframe");
+      if (frame && frame.getAttribute("src") !== n) frame.src = n;
+      tile.dataset.down = 0;
+      tile.dataset.chimeOnValidate = "1";
+      pollTile(tile);
+    } else {
+      const added = createTile(n);
+      grid.appendChild(added);
+      updateGridVisibility();
+      fixSpans();
+      pollTile(added);
+    }
+  } else {
+    urls.push(n);
+    save(urls);
+    const tile = createTile(n);
+    grid.appendChild(tile);
+    updateGridVisibility();
+    fixSpans();
+    pollTile(tile);
+  }
   return true;
 };
 
@@ -266,71 +308,99 @@ function embed(tile) {
   tile.appendChild(frame);
 }
 
+const pollGenerations = new WeakMap();
+function tileIsCurrent(tile, url, generation) {
+  return tile.parentElement === grid
+    && tile.dataset.url === url
+    && pollGenerations.get(tile) === generation;
+}
+
+function pollTile(tile) {
+  if (tile.parentElement !== grid) return;
+  const url = tile.dataset.url;
+  const generation = (pollGenerations.get(tile) || 0) + 1;
+  pollGenerations.set(tile, generation);
+  fetch(new URL("api/stats", url), { signal: AbortSignal.timeout(3000) })
+    .then(r => tileIsCurrent(tile, url, generation) ? r.json() : null)
+    .then(s => {
+      if (!tileIsCurrent(tile, url, generation)) return;
+      // "Responded" is not "live", and a bare 200 from some other server on
+      // this port is not a StreamHost at all — require the host's own state
+      // field before trusting the endpoint enough to embed it.
+      if (typeof s.state !== "string") throw new Error("not a streamhost");
+      const live = s.state === "live";
+      tile.classList.toggle("live", live);
+      tile.querySelector(".name").textContent = s.name || url;
+      tile.querySelector(".state").textContent = live
+        ? `${s.sourceFps} fps · ${s.viewers} watching`
+        : s.state === "idle" ? "not streaming yet"
+        : (s.state || "not streaming");
+      // Hosts hand the current viewer key to tailnet/local callers; a restart
+      // rotates it, so refresh the saved link when it changes. addStream updates
+      // only this tile and immediately polls its new URL.
+      if (s.key && new URL(url).searchParams.get("k") !== s.key) {
+        window.addStream(new URL(url).origin + "/?k=" + encodeURIComponent(s.key));
+        return;
+      }
+      const chimeOnValidate = tile.dataset.chimeOnValidate === "1";
+      delete tile.dataset.chimeOnValidate;
+      // Validated (live OR the idle holding page, which is meant to embed):
+      // add the iframe if it isn't there yet. This is both the first-embed
+      // path and the recovery path for a host that was unreachable — its tile
+      // carried no iframe — and has come back. A fresh embed is clean, so
+      // clear the missed-poll counter that would otherwise force a reload.
+      if (!tile.querySelector("iframe")) {
+        embed(tile);
+        tile.dataset.down = 0;
+        // Only the live embed chimes here: the inner page loads already-live
+        // and stays silent. An idle embed makes no sound now; its inner page
+        // chimes when it goes live.
+        if (live) playChime();
+      }
+      // Rekey used to rebuild and re-embed this tile. Preserve its live-embed
+      // chime when the existing iframe can instead be updated in place.
+      else if (chimeOnValidate && live) playChime();
+      // An already-embedded iframe that sat on the browser's own error page
+      // (host was down when it loaded, no script of ours runs there) gets
+      // reloaded when the host returns. Two missed polls required so a single
+      // stats timeout on a congested link can't restart healthy playback (the
+      // key check above already covers restarts, but not --no-key or same-key).
+      else if (live && +tile.dataset.down >= 2)
+        tile.querySelector("iframe").src = url;
+      if (live) tile.dataset.down = 0;
+    })
+    .catch(() => {
+      if (!tileIsCurrent(tile, url, generation)) return;
+      tile.dataset.down = (+tile.dataset.down || 0) + 1;
+      tile.classList.remove("live");
+      if (tile.querySelector(".name").textContent === "…")
+        tile.querySelector(".name").textContent = url.replace(/^https?:\/\//, "");
+      tile.querySelector(".state").textContent = "offline";
+    });
+}
+
 function poll() {
   for (const tile of grid.children) {
-    const url = tile.dataset.url;
-    fetch(new URL("api/stats", url), { signal: AbortSignal.timeout(3000) })
-      .then(r => r.json())
-      .then(s => {
-        // "Responded" is not "live", and a bare 200 from some other server on
-        // this port is not a StreamHost at all — require the host's own state
-        // field before trusting the endpoint enough to embed it.
-        if (typeof s.state !== "string") throw new Error("not a streamhost");
-        const live = s.state === "live";
-        tile.classList.toggle("live", live);
-        tile.querySelector(".name").textContent = s.name || url;
-        tile.querySelector(".state").textContent = live
-          ? `${s.sourceFps} fps · ${s.viewers} watching`
-          : s.state === "idle" ? "not streaming yet"
-          : (s.state || "not streaming");
-        // Hosts hand the current viewer key to tailnet/local callers; a restart
-        // rotates it, so refresh the saved link when it changes. addStream
-        // re-renders the tile and the next poll re-embeds it with the new key.
-        if (s.key && new URL(url).searchParams.get("k") !== s.key) {
-          window.addStream(new URL(url).origin + "/?k=" + encodeURIComponent(s.key));
-          return;
-        }
-        // Validated (live OR the idle holding page, which is meant to embed):
-        // add the iframe if it isn't there yet. This is both the first-embed
-        // path and the recovery path for a host that was unreachable — its tile
-        // carried no iframe — and has come back. A fresh embed is clean, so
-        // clear the missed-poll counter that would otherwise force a reload.
-        if (!tile.querySelector("iframe")) {
-          embed(tile);
-          tile.dataset.down = 0;
-          // Only the live embed chimes here: the inner page loads already-live
-          // and stays silent. An idle embed makes no sound now; its inner page
-          // chimes when it goes live.
-          if (live) playChime();
-        }
-        // An already-embedded iframe that sat on the browser's own error page
-        // (host was down when it loaded, no script of ours runs there) gets
-        // reloaded when the host returns. Two missed polls required so a single
-        // stats timeout on a congested link can't restart healthy playback (the
-        // key check above already covers restarts, but not --no-key or same-key).
-        else if (live && +tile.dataset.down >= 2)
-          tile.querySelector("iframe").src = url;
-        if (live) tile.dataset.down = 0;
-      })
-      .catch(() => {
-        tile.dataset.down = (+tile.dataset.down || 0) + 1;
-        tile.classList.remove("live");
-        if (tile.querySelector(".name").textContent === "…")
-          tile.querySelector(".name").textContent = url.replace(/^https?:\/\//, "");
-        tile.querySelector(".state").textContent = "offline";
-      });
+    pollTile(tile);
   }
 }
 setInterval(poll, 5000);
 
-function move(url, dir) {
+function move(tile, dir) {
+  if (tile.parentElement !== grid) return;
+  const url = tile.dataset.url;
   const urls = load();
   const i = urls.indexOf(url);
   const j = i + dir;
   if (i < 0 || j < 0 || j >= urls.length) return;
+  const targetUrl = urls[j];
+  const target = [...grid.children].find(t => t.dataset.url === targetUrl);
+  if (!target) return;
   [urls[i], urls[j]] = [urls[j], urls[i]];
   save(urls);
-  render();
+  if (dir < 0) grid.insertBefore(tile, target);
+  else grid.insertBefore(target, tile);
+  fixSpans();
 }
 
 // The add-stream bar can be tucked away while watching; the faint chip
