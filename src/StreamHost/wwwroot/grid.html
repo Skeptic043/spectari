@@ -103,12 +103,9 @@ const KEY = "streamhost_grid_urls";
 function load() { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch { return []; } }
 function save(urls) { localStorage.setItem(KEY, JSON.stringify(urls)); }
 
-// Soft go-live chime, generated with Web Audio (no binary asset). Same on/off
-// key and sound as the viewer page; absent = on. This fires only for a tile that
-// embeds straight into a LIVE stream — an unreachable host that comes back up, or
-// a live link just added — because that inner page loads already-live and stays
-// silent. A tile embedded while idle chimes from the inner page instead, so
-// exactly one layer sounds per transition.
+// The Watch window's background discovery requests this chime for newly-live
+// streams that are not already in the grid. The header bell is its only toggle;
+// absent = on, preserving the existing persisted setting.
 const CHIME_KEY = "chimeOn";
 function chimeEnabled() { return localStorage.getItem(CHIME_KEY) !== "0"; }
 let audioCtx = null;
@@ -142,6 +139,7 @@ chimeBtn.onclick = () => {
   syncChimeBtn();
 };
 syncChimeBtn();
+window.playNotificationChime = playChime;
 
 function normalize(u) {
   u = u.trim();
@@ -272,7 +270,6 @@ window.addStream = function (u) {
       const frame = tile.querySelector("iframe");
       if (frame && frame.getAttribute("src") !== n) frame.src = n;
       tile.dataset.down = 0;
-      tile.dataset.chimeOnValidate = "1";
       pollTile(tile);
     } else {
       const added = createTile(n);
@@ -342,8 +339,6 @@ function pollTile(tile) {
         window.addStream(new URL(url).origin + "/?k=" + encodeURIComponent(s.key));
         return;
       }
-      const chimeOnValidate = tile.dataset.chimeOnValidate === "1";
-      delete tile.dataset.chimeOnValidate;
       // Validated (live OR the idle holding page, which is meant to embed):
       // add the iframe if it isn't there yet. This is both the first-embed
       // path and the recovery path for a host that was unreachable — its tile
@@ -352,14 +347,7 @@ function pollTile(tile) {
       if (!tile.querySelector("iframe")) {
         embed(tile);
         tile.dataset.down = 0;
-        // Only the live embed chimes here: the inner page loads already-live
-        // and stays silent. An idle embed makes no sound now; its inner page
-        // chimes when it goes live.
-        if (live) playChime();
       }
-      // Rekey used to rebuild and re-embed this tile. Preserve its live-embed
-      // chime when the existing iframe can instead be updated in place.
-      else if (chimeOnValidate && live) playChime();
       // An already-embedded iframe that sat on the browser's own error page
       // (host was down when it loaded, no script of ours runs there) gets
       // reloaded when the host returns. Two missed polls required so a single
@@ -440,6 +428,13 @@ window.setFoundStreams = function (streams, status) {
     finder.appendChild(b);
   }
   findStatus.textContent = status || "";
+};
+window.getWatchedOrigins = function () {
+  const origins = [];
+  for (const tile of grid.children) {
+    try { origins.push(new URL(tile.dataset.url).origin); } catch (_) {}
+  }
+  return origins;
 };
 
 document.getElementById("addBtn").onclick = add;

@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace StreamHost.Util;
 
-public sealed record DiscoveredStream(string PeerName, string Url, string StreamName, int Viewers);
+public sealed record DiscoveredStream(string PeerName, string Url, string StreamName, int Viewers, bool IsLocal);
 
 /// <summary>
 /// Finds live StreamHost streams on the tailnet: asks the Tailscale CLI for
@@ -21,21 +21,25 @@ public static class StreamDiscovery
     /// <summary>Probe every known peer on the given ports; returns live streams only.</summary>
     public static async Task<List<DiscoveredStream>> FindAsync(IEnumerable<int> ports, CancellationToken ct)
     {
-        var endpoints = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // "ip:port" -> peer name
+        var endpoints = new Dictionary<string, (string PeerName, bool IsLocal)>(StringComparer.OrdinalIgnoreCase);
         int[] portList = ports.Distinct().ToArray();
 
         // The CLI call can block for seconds; keep it off the caller's (UI) thread.
-        foreach (var (ip, name) in await Task.Run(GetTailnetPeers, ct))
+        foreach (var (ip, name, isLocal) in await Task.Run(GetTailnetPeers, ct))
             foreach (int port in portList)
-                endpoints.TryAdd($"{ip}:{port}", name);
+                endpoints.TryAdd($"{ip}:{port}", (name, isLocal));
 
         // Loopback too: your own stream should show up even when the Tailscale
         // backend is stopped (no tailnet IPs to enumerate then).
         foreach (int port in portList)
-            endpoints.TryAdd($"127.0.0.1:{port}", Environment.MachineName);
+            endpoints.TryAdd($"127.0.0.1:{port}", (Environment.MachineName, true));
 
+        var localAddresses = LocalAddresses();
         foreach (string remembered in LoadRemembered())
-            endpoints.TryAdd(remembered, remembered.Split(':')[0]);
+        {
+            string host = remembered.Split(':')[0];
+            endpoints.TryAdd(remembered, (host, localAddresses.Contains(host)));
+        }
 
         var probes = endpoints.Select(async kv =>
         {
@@ -49,10 +53,11 @@ public static class StreamDiscovery
                 string? key = root.TryGetProperty("key", out var k) ? k.GetString() : null;
                 string url = $"http://{kv.Key}/" + (key is null ? "" : $"?k={key}");
                 return new DiscoveredStream(
-                    kv.Value,
+                    kv.Value.PeerName,
                     url,
-                    root.TryGetProperty("name", out var n) ? n.GetString() ?? kv.Value : kv.Value,
-                    root.TryGetProperty("viewers", out var v) ? v.GetInt32() : 0);
+                    root.TryGetProperty("name", out var n) ? n.GetString() ?? kv.Value.PeerName : kv.Value.PeerName,
+                    root.TryGetProperty("viewers", out var v) ? v.GetInt32() : 0,
+                    kv.Value.IsLocal);
             }
             catch { return null; }
         }).ToArray();
@@ -62,7 +67,11 @@ public static class StreamDiscovery
         // address. Keyless streams have nothing safe to collapse on.
         var found = (await Task.WhenAll(probes)).Where(s => s is not null).Select(s => s!)
             .GroupBy(s => KeyOf(s.Url) ?? s.Url)
-            .Select(g => g.OrderBy(s => new Uri(s.Url).Host == "127.0.0.1" ? 1 : 0).First())
+            .Select(g =>
+            {
+                var selected = g.OrderBy(s => new Uri(s.Url).Host == "127.0.0.1" ? 1 : 0).First();
+                return selected with { IsLocal = g.Any(s => s.IsLocal) };
+            })
             .ToList();
         SaveRemembered(found.Select(s => new Uri(s.Url).Authority).Where(a => !a.StartsWith("127.")));
         return found.OrderBy(s => s.StreamName, StringComparer.OrdinalIgnoreCase).ToList();
@@ -78,19 +87,32 @@ public static class StreamDiscovery
         catch { return null; }
     }
 
+    private static HashSet<string> LocalAddresses()
+    {
+        var addresses = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "127.0.0.1" };
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                foreach (var address in nic.GetIPProperties().UnicastAddresses)
+                    addresses.Add(address.Address.ToString());
+        }
+        catch { }
+        return addresses;
+    }
+
     /// <summary>IPv4 + hostname of every online tailnet peer, this machine included
     /// (your own stream showing up in the finder is correct). Empty when the
     /// Tailscale CLI is missing or errors — remembered endpoints still get probed.</summary>
-    private static List<(string Ip, string Name)> GetTailnetPeers()
+    private static List<(string Ip, string Name, bool IsLocal)> GetTailnetPeers()
     {
         string? json = RunTailscale("status --json");
         if (json is null) return [];
-        var peers = new List<(string, string)>();
+        var peers = new List<(string, string, bool)>();
         try
         {
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            void AddNode(JsonElement node)
+            void AddNode(JsonElement node, bool isLocal)
             {
                 if (node.TryGetProperty("Online", out var online) && !online.GetBoolean()) return;
                 if (!node.TryGetProperty("TailscaleIPs", out var ips) || ips.ValueKind != JsonValueKind.Array) return;
@@ -98,12 +120,12 @@ public static class StreamDiscovery
                 foreach (var ip in ips.EnumerateArray())
                 {
                     string? s = ip.GetString();
-                    if (s is not null && !s.Contains(':')) { peers.Add((s, name)); break; }
+                    if (s is not null && !s.Contains(':')) { peers.Add((s, name, isLocal)); break; }
                 }
             }
-            if (root.TryGetProperty("Self", out var self)) AddNode(self);
+            if (root.TryGetProperty("Self", out var self)) AddNode(self, true);
             if (root.TryGetProperty("Peer", out var peerMap) && peerMap.ValueKind == JsonValueKind.Object)
-                foreach (var p in peerMap.EnumerateObject()) AddNode(p.Value);
+                foreach (var p in peerMap.EnumerateObject()) AddNode(p.Value, false);
         }
         catch { }
         return peers;
@@ -184,8 +206,10 @@ public static class StreamDiscovery
     {
         try
         {
-            var merged = LoadRemembered().Union(liveEndpoints, StringComparer.OrdinalIgnoreCase)
+            var existing = LoadRemembered();
+            var merged = existing.Union(liveEndpoints, StringComparer.OrdinalIgnoreCase)
                 .TakeLast(32).ToList();
+            if (existing.SequenceEqual(merged, StringComparer.OrdinalIgnoreCase)) return;
             Directory.CreateDirectory(Path.GetDirectoryName(RememberedPath)!);
             // Temp-then-swap so a crash mid-write can't corrupt peers.json.
             string tmp = RememberedPath + ".tmp";

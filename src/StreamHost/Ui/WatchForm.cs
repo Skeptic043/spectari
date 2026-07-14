@@ -14,7 +14,8 @@ namespace StreamHost.Ui;
 /// "Find streams" row; discovery runs natively here (it needs the tailscale
 /// CLI) and the results are pushed into the page, so the row lives in the
 /// same bar as the add-stream controls and hides together with them. It
-/// searches once when the window opens, then only on the button.
+/// searches once when the window opens, then refreshes quietly in the
+/// background while the window remains open.
 /// </summary>
 public sealed class WatchForm : Form
 {
@@ -23,9 +24,13 @@ public sealed class WatchForm : Form
 
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private readonly int _extraPort;
+    private readonly System.Windows.Forms.Timer _discoveryTimer = new() { Interval = 30_000 };
+    private readonly CancellationTokenSource _closeCts = new();
+    private readonly HashSet<string> _observedSessions = new(StringComparer.Ordinal);
     private bool _finding;
     private bool _webReady;
     private bool _searchedOnce;
+    private bool _observationBaselineEstablished;
 
     // Saved chrome so an HTML fullscreen request (the viewer's Fullscreen button)
     // can take over the whole window and then restore exactly what was there.
@@ -59,7 +64,25 @@ public sealed class WatchForm : Form
         Controls.Add(_web);
         Controls.Add(_fallback);
 
+        _discoveryTimer.Tick += (_, _) => _ = FindStreamsAsync(automatic: true);
+        FormClosed += (_, _) => StopDiscovery();
         Load += async (_, _) => await InitAsync();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            StopDiscovery();
+            _discoveryTimer.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private void StopDiscovery()
+    {
+        _discoveryTimer.Stop();
+        if (!_closeCts.IsCancellationRequested) _closeCts.Cancel();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -75,15 +98,17 @@ public sealed class WatchForm : Form
         {
             string dataDir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "webview2");
-            // Let the soft go-live chime sound without a click: Chromium's autoplay
-            // policy would otherwise block a fresh AudioContext in this embedded
-            // browser. This flag affects only the Watch window, never real browsers.
+            // Let the background notification chime sound without a click:
+            // Chromium's autoplay policy would otherwise block a fresh AudioContext
+            // in this embedded browser. This affects only the Watch window.
             var opts = new CoreWebView2EnvironmentOptions
             {
                 AdditionalBrowserArguments = "--autoplay-policy=no-user-gesture-required",
             };
             var env = await CoreWebView2Environment.CreateAsync(null, dataDir, opts);
+            if (_closeCts.IsCancellationRequested || IsDisposed || Disposing) return;
             await _web.EnsureCoreWebView2Async(env);
+            if (_closeCts.IsCancellationRequested || IsDisposed || Disposing) return;
             _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "streamhost.local", Path.Combine(AppContext.BaseDirectory, "wwwroot"),
                 CoreWebView2HostResourceAccessKind.Allow);
@@ -117,24 +142,26 @@ public sealed class WatchForm : Form
                 {
                     using var doc = JsonDocument.Parse(e.WebMessageAsJson);
                     if (doc.RootElement.TryGetProperty("find", out JsonElement _))
-                        _ = FindStreamsAsync();
+                        _ = FindStreamsAsync(automatic: false);
                 }
                 catch { }
             };
             // The initial search waits for the page: results land in its DOM.
             _web.CoreWebView2.NavigationCompleted += (_, e) =>
             {
-                _webReady = true;
+                _webReady = e.IsSuccess;
                 if (e.IsSuccess && !_searchedOnce)
                 {
                     _searchedOnce = true;
-                    _ = FindStreamsAsync();
+                    _ = FindStreamsAsync(automatic: true);
+                    _discoveryTimer.Start();
                 }
             };
             _web.CoreWebView2.Navigate("http://streamhost.local/grid.html");
         }
         catch (Exception ex)
         {
+            if (_closeCts.IsCancellationRequested || IsDisposed || Disposing) return;
             Console.Error.WriteLine($"[watch] WebView2 unavailable: {ex.Message}");
             _web.Visible = false;
             _fallback.Text = "The in-app viewer needs the WebView2 runtime (part of Windows 10/11 updates).\n" +
@@ -173,27 +200,106 @@ public sealed class WatchForm : Form
     /// <summary>Probes tailnet peers (plus remembered endpoints) and pushes the
     /// results into the grid page's Find-streams row. Clicking a result there
     /// adds the stream to the existing grid — never a new window.</summary>
-    private async Task FindStreamsAsync()
+    private async Task FindStreamsAsync(bool automatic)
     {
-        if (_finding || !_webReady || IsDisposed) return;
+        if (_finding || !_webReady || IsDisposed || Disposing || _closeCts.IsCancellationRequested) return;
         _finding = true;
         try
         {
-            await PushFinderAsync([], "searching…");
-            var streams = await StreamDiscovery.FindAsync([8093, _extraPort], CancellationToken.None);
-            if (IsDisposed) return;
+            if (!automatic) await PushFinderAsync([], "searching…");
+            var streams = await StreamDiscovery.FindAsync([8093, _extraPort], _closeCts.Token);
+            if (IsDisposed || Disposing || _closeCts.IsCancellationRequested) return;
             await PushFinderAsync(streams,
                 streams.Count == 0 ? "no live streams found on your tailnet" : "");
+            await ObserveStreamsAsync(streams, automatic);
+        }
+        catch (OperationCanceledException) when (_closeCts.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
-            if (!IsDisposed)
+            if (!automatic && !IsDisposed && !Disposing && !_closeCts.IsCancellationRequested)
                 try { await PushFinderAsync([], $"search failed: {ex.Message}"); } catch { }
         }
         finally
         {
             _finding = false;
         }
+    }
+
+    private async Task ObserveStreamsAsync(IReadOnlyList<DiscoveredStream> streams, bool automatic)
+    {
+        bool mayNotify = automatic && _observationBaselineEstablished;
+        _observationBaselineEstablished = true;
+
+        HashSet<string>? watchedOrigins = mayNotify ? await GetWatchedOriginsAsync() : null;
+        bool shouldChime = false;
+        foreach (var stream in streams)
+        {
+            bool newlyObserved = _observedSessions.Add(SessionIdentity(stream.Url));
+            string? origin = OriginOf(stream.Url);
+            if (mayNotify && newlyObserved && !stream.IsLocal && origin is not null
+                && watchedOrigins is not null && !watchedOrigins.Contains(origin))
+                shouldChime = true;
+        }
+
+        // Observation state advances before asking the page to play sound, so a
+        // muted poll cannot become a delayed notification when the bell is enabled.
+        if (shouldChime) await PlayNotificationChimeAsync();
+    }
+
+    private async Task<HashSet<string>?> GetWatchedOriginsAsync()
+    {
+        try
+        {
+            if (!_webReady || IsDisposed || Disposing || _closeCts.IsCancellationRequested) return null;
+            string json = await _web.CoreWebView2.ExecuteScriptAsync(
+                "window.getWatchedOrigins ? window.getWatchedOrigins() : []");
+            var origins = JsonSerializer.Deserialize<List<string>>(json) ?? [];
+            return origins.Select(OriginOf).Where(o => o is not null).Select(o => o!)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task PlayNotificationChimeAsync()
+    {
+        try
+        {
+            if (!_webReady || IsDisposed || Disposing || _closeCts.IsCancellationRequested) return;
+            await _web.CoreWebView2.ExecuteScriptAsync(
+                "if (window.playNotificationChime) window.playNotificationChime()");
+        }
+        catch
+        {
+            // The page or WebView can disappear while a background search completes.
+        }
+    }
+
+    private static string SessionIdentity(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out Uri? uri))
+        {
+            string query = uri.Query;
+            if (query.StartsWith("?k=", StringComparison.OrdinalIgnoreCase))
+            {
+                string key = query[3..].Split('&', 2)[0];
+                if (key.Length > 0) return "key:" + Uri.UnescapeDataString(key);
+            }
+        }
+        return "origin:" + (OriginOf(url) ?? url);
+    }
+
+    private static string? OriginOf(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            return null;
+        return uri.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped)
+            .TrimEnd('/').ToLowerInvariant();
     }
 
     private Task PushFinderAsync(IReadOnlyList<DiscoveredStream> streams, string status)
