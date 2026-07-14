@@ -110,7 +110,11 @@ public sealed class StreamSession
                 reason = ex.Message;
                 Console.Error.WriteLine($"[session] {ex}");
             }
-            finally { Stopped?.Invoke(reason); }
+            finally
+            {
+                Console.WriteLine($"[shutdown] stopped: {reason}");
+                Stopped?.Invoke(reason);
+            }
         })
         { IsBackground = true, Name = "stream-session" };
         _thread.Start();
