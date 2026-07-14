@@ -9,9 +9,12 @@ dist/
 *.user
 *.suo
 
-# Local-only dev docs and Claude config (never pushed)
+# Local-only dev docs and AI/dev tooling config (never pushed)
 CLAUDE.md
+AGENTS.md
 PLAN.md
 DESIGN.md
 field-test.md
 .claude/
+.agents/
+.codex/
