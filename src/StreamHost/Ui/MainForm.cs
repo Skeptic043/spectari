@@ -151,6 +151,7 @@ public sealed class MainForm : Form
     private SessionConfig? _lastConfig;   // last launched config, reused for the fix-port restart
     private SessionConfig? _pendingSwitch; // queued source switch, launched when Stopped fires
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
+    private bool _refreshingSourceOptions; // suppresses preset events caused by Native relabeling
     // Persisted "LAN access was actually applied" flag: set only on a successful
     // Fix access with Allow LAN checked, never on a mere checkbox toggle. Gates
     // whether LAN addresses are treated as reachable for links and status.
@@ -170,17 +171,6 @@ public sealed class MainForm : Form
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT { public int Left, Top, Right, Bottom; }
-
-    // Visible window bounds without the invisible resize border, so the Native
-    // preset label shows the size capture will actually see.
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT rect, int size);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
 
     // A picked window can close before the stream launches (right after the Switch
     // dialog's OK, or the main selection went stale). Validate the handle at the
@@ -331,10 +321,10 @@ public sealed class MainForm : Form
         // Nothing gets disabled — the selected radio decides which combo is USED.
         _windowCombo.DropDown += (_, _) => PopulateWindows();   // fresh list every open
         _monitorCombo.DropDown += (_, _) => PopulateMonitors(); // monitors change too (dock/undock)
-        _rbWindow.CheckedChanged += (_, _) => { UpdateAudioModeLabel(); UpdateNativePresetLabel(); PopulateBitrateOptions(); };
-        _windowCombo.SelectedIndexChanged += (_, _) => { UpdateNativePresetLabel(); PopulateBitrateOptions(); };
-        _monitorCombo.SelectedIndexChanged += (_, _) => { UpdateNativePresetLabel(); PopulateBitrateOptions(); };
-        _presetCombo.SelectedIndexChanged += (_, _) => PopulateBitrateOptions();
+        _rbWindow.CheckedChanged += (_, _) => { UpdateAudioModeLabel(); RefreshSourceOptions(); };
+        _windowCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
+        _monitorCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
+        _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
         // The bitrate combo is the single source of truth for the chosen tier:
         // remember every user pick so it survives repopulates (source/preset
         // changes re-fire PopulateBitrateOptions) and app restarts. Guarded so the
@@ -411,8 +401,7 @@ public sealed class MainForm : Form
         PopulateSources();
         LoadSettings();
         UpdateLinkBox();
-        UpdateNativePresetLabel();
-        PopulateBitrateOptions();
+        RefreshSourceOptions();
         StartIdleServer();
     }
 
@@ -836,33 +825,41 @@ public sealed class MainForm : Form
             "window" => 1,
             _ => dlgWindows.FindIndex(w => w.ProcessName.Equals(curAudioKey, StringComparison.OrdinalIgnoreCase)) is int ai && ai >= 0 ? ai + 2 : 1,
         };
-        // The dialog's Native entries track ITS pickers, same as the main window's.
-        void UpdateDlgNativeLabel()
+        // Refresh the dialog's Native labels and bitrate choices from one immutable
+        // enumerated size snapshot, matching the main controls.
+        bool refreshingDlgSourceOptions = false;
+        void RefreshDlgSourceOptions()
         {
-            for (int idx = 0; idx < Presets.Length && idx < presetCombo.Items.Count; idx++)
+            if (refreshingDlgSourceOptions) return;
+            refreshingDlgSourceOptions = true;
+            try
             {
-                if (Presets[idx].Height != 0) continue;
-                int sel = presetCombo.SelectedIndex;
-                presetCombo.Items[idx] = Presets[idx] with
+                var sourceSize = SelectedSourceSize(rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex, dlgWindows, dlgMonitors);
+                for (int idx = 0; idx < Presets.Length && idx < presetCombo.Items.Count; idx++)
                 {
-                    Label = ComputeNativeLabel(Presets[idx].Fps, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex, dlgWindows, dlgMonitors),
-                };
-                presetCombo.SelectedIndex = sel;
+                    if (Presets[idx].Height != 0) continue;
+                    string label = ComputeNativeLabel(Presets[idx].Fps, sourceSize);
+                    if (presetCombo.Items[idx] is Preset current && current.Label == label) continue;
+                    int sel = presetCombo.SelectedIndex;
+                    presetCombo.Items[idx] = Presets[idx] with { Label = label };
+                    presetCombo.SelectedIndex = sel;
+                }
+
+                if (presetCombo.SelectedItem is not Preset p) return;
+                string keep = (bitrateCombo.SelectedItem as BitrateChoice)?.Tier
+                              ?? (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med";
+                var choices = BuildBitrateChoices(p, sourceSize);
+                bitrateCombo.BeginUpdate();
+                bitrateCombo.Items.Clear();
+                foreach (var c in choices) bitrateCombo.Items.Add(c);
+                bitrateCombo.EndUpdate();
+                int i = choices.FindIndex(c => c.Tier == keep);
+                bitrateCombo.SelectedIndex = i >= 0 ? i : 1;
             }
-        }
-        // The dialog's bitrate options track ITS pickers too.
-        void UpdateDlgBitrate()
-        {
-            if (presetCombo.SelectedItem is not Preset p) return;
-            string keep = (bitrateCombo.SelectedItem as BitrateChoice)?.Tier
-                          ?? (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med";
-            var choices = BuildBitrateChoices(p, rbWin.Checked, winCombo.SelectedIndex, monCombo.SelectedIndex, dlgWindows, dlgMonitors);
-            bitrateCombo.BeginUpdate();
-            bitrateCombo.Items.Clear();
-            foreach (var c in choices) bitrateCombo.Items.Add(c);
-            bitrateCombo.EndUpdate();
-            int i = choices.FindIndex(c => c.Tier == keep);
-            bitrateCombo.SelectedIndex = i >= 0 ? i : 1;
+            finally
+            {
+                refreshingDlgSourceOptions = false;
+            }
         }
         rbWin.CheckedChanged += (_, _) =>
         {
@@ -870,13 +867,12 @@ public sealed class MainForm : Form
                 audioCombo.Items[1] = rbWin.Checked
                     ? "Captured window's audio"
                     : "No audio (monitor share: pick an app below)";
-            UpdateDlgNativeLabel();
-            UpdateDlgBitrate();
+            RefreshDlgSourceOptions();
         };
-        winCombo.SelectedIndexChanged += (_, _) => { UpdateDlgNativeLabel(); UpdateDlgBitrate(); };
-        monCombo.SelectedIndexChanged += (_, _) => { UpdateDlgNativeLabel(); UpdateDlgBitrate(); };
-        presetCombo.SelectedIndexChanged += (_, _) => UpdateDlgBitrate();
-        UpdateDlgBitrate();
+        winCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
+        monCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
+        presetCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
+        RefreshDlgSourceOptions();
 
         var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 6, Padding = new Padding(10) };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -1105,15 +1101,33 @@ public sealed class MainForm : Form
         catch { /* form gone: nothing left to rebuild */ }
     }
 
+    /// <summary>Refreshes all source-derived controls from one enumerated size
+    /// snapshot so the Native label and bitrate class cannot disagree.</summary>
+    private void RefreshSourceOptions()
+    {
+        if (_refreshingSourceOptions) return;
+        _refreshingSourceOptions = true;
+        try
+        {
+            var sourceSize = SelectedSourceSize(_rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex, _windows, _monitors);
+            UpdateNativePresetLabel(sourceSize);
+            PopulateBitrateOptions(sourceSize);
+        }
+        finally
+        {
+            _refreshingSourceOptions = false;
+        }
+    }
+
     /// <summary>Rewrites the Native preset entries with the selected source's real
     /// resolution, e.g. "Native · 60 fps (2560x1440)". The bitrate dropdown next
     /// to it carries the Mbps numbers.</summary>
-    private void UpdateNativePresetLabel()
+    private void UpdateNativePresetLabel((int W, int H) sourceSize)
     {
         for (int idx = 0; idx < Presets.Length && idx < _presetCombo.Items.Count; idx++)
         {
             if (Presets[idx].Height != 0) continue;
-            string label = ComputeNativeLabel(Presets[idx].Fps, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex, _windows, _monitors);
+            string label = ComputeNativeLabel(Presets[idx].Fps, sourceSize);
             if (_presetCombo.Items[idx] is Preset p && p.Label == label) continue;
             int sel = _presetCombo.SelectedIndex;
             _presetCombo.Items[idx] = Presets[idx] with { Label = label };
@@ -1121,10 +1135,9 @@ public sealed class MainForm : Form
         }
     }
 
-    private string ComputeNativeLabel(int fps, bool windowChecked, int windowIdx, int monitorIdx,
-        List<WindowDescription> windows, List<MonitorDescription> monitors)
+    private static string ComputeNativeLabel(int fps, (int W, int H) sourceSize)
     {
-        var (w, h) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx, windows, monitors);
+        var (w, h) = sourceSize;
         return w > 0 && h > 0 ? $"Native · {fps} fps  ({w}x{h})" : $"Native · {fps} fps  (source size)";
     }
 
@@ -1145,17 +1158,15 @@ public sealed class MainForm : Form
     }
 
     /// <summary>Pixel size of the selected source: monitor resolution, or the
-    /// window's visible bounds. (0,0) when nothing is resolvable.</summary>
-    private (int W, int H) SelectedSourceSize(bool windowChecked, int windowIdx, int monitorIdx,
+    /// window's stable enumeration snapshot. (0,0) when nothing is resolvable.</summary>
+    private static (int W, int H) SelectedSourceSize(bool windowChecked, int windowIdx, int monitorIdx,
         List<WindowDescription> windows, List<MonitorDescription> monitors)
     {
         if (windowChecked)
         {
             if (windowIdx < 0 || windowIdx >= windows.Count) return (0, 0);
-            IntPtr hwnd = windows[windowIdx].Handle;
-            if (DwmGetWindowAttribute(hwnd, 9 /* DWMWA_EXTENDED_FRAME_BOUNDS */, out RECT r, Marshal.SizeOf<RECT>()) != 0)
-                GetWindowRect(hwnd, out r);
-            return (r.Right - r.Left, r.Bottom - r.Top);
+            WindowDescription window = windows[windowIdx];
+            return (window.Width, window.Height);
         }
         if (monitorIdx >= 0 && monitorIdx < monitors.Count)
             return (monitors[monitorIdx].Width, monitors[monitorIdx].Height);
@@ -1165,10 +1176,9 @@ public sealed class MainForm : Form
     /// <summary>The Low/Medium/High options for a preset applied to a source:
     /// the numbers come from the actual output size (pixel area, so a tall
     /// portrait window is billed by its real pixel count, not its height).</summary>
-    private List<BitrateChoice> BuildBitrateChoices(Preset preset, bool windowChecked, int windowIdx, int monitorIdx,
-        List<WindowDescription> windows, List<MonitorDescription> monitors)
+    private static List<BitrateChoice> BuildBitrateChoices(Preset preset, (int W, int H) sourceSize)
     {
-        var (srcW, srcH) = SelectedSourceSize(windowChecked, windowIdx, monitorIdx, windows, monitors);
+        var (srcW, srcH) = sourceSize;
         if (srcH <= 0) (srcW, srcH) = (1920, 1080); // nothing resolved yet
         int outH = preset.Height > 0 && preset.Height < srcH ? preset.Height : srcH;
         int outW = (int)Math.Round((double)srcW * outH / srcH);
@@ -1185,10 +1195,10 @@ public sealed class MainForm : Form
 
     /// <summary>Refills the bitrate dropdown for the current preset + source,
     /// keeping the chosen tier (Low/Medium/High) across refills.</summary>
-    private void PopulateBitrateOptions()
+    private void PopulateBitrateOptions((int W, int H) sourceSize)
     {
         if (_presetCombo.SelectedItem is not Preset preset) return;
-        var choices = BuildBitrateChoices(preset, _rbWindow.Checked, _windowCombo.SelectedIndex, _monitorCombo.SelectedIndex, _windows, _monitors);
+        var choices = BuildBitrateChoices(preset, sourceSize);
         _bitrateCombo.BeginUpdate();
         _bitrateCombo.Items.Clear();
         foreach (var c in choices) _bitrateCombo.Items.Add(c);
