@@ -29,9 +29,10 @@ with privacy addons, which is a big part of why this exists.
   window shows the same grid without a browser, with one-click discovery of
   other StreamHost machines on your Tailscale network.
 - While the app is open but not streaming, the link serves a "not streaming
-  yet" page that connects on its own when you start. Viewers who have the
-  page open hear a soft chime when the stream goes live; a bell button on
-  the page turns it off.
+  yet" page that connects on its own when you start. The Watch window checks
+  your tailnet in the background and plays one soft chime when a stream you
+  aren't already watching goes live; the bell button in the grid header
+  turns that off.
 
 ## Requirements
 
