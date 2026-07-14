@@ -56,7 +56,6 @@
     <button id="muteBtn" title="Mute / unmute">&#128263;</button>
     <input type="range" id="volSlider" min="0" max="100" value="100" title="Volume">
     <button id="fsBtn" title="Fullscreen">&#x26F6;</button>
-    <button id="chimeBtn" title="Go-live chime on/off">&#128276;</button>
   </div>
   <div id="overlay">
     <div class="msg" id="overlayMsg">connecting&hellip;</div>
@@ -107,43 +106,6 @@ function syncSoundChip() {
 }
 setInterval(syncSoundChip, 1000);
 
-// Soft go-live chime. Generated with Web Audio so the repo ships no binary
-// asset. On/off persists per browser (absent key = on); this page is also loaded
-// as a grid tile, so each host's iframe keeps its own setting.
-const CHIME_KEY = "chimeOn";
-function chimeEnabled() { return localStorage.getItem(CHIME_KEY) !== "0"; }
-let audioCtx = null;
-function playChime() {
-  if (!chimeEnabled()) return;
-  try {
-    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
-    const now = audioCtx.currentTime;
-    // Two soft sine notes a fifth apart (C5 then G5), quick attack, gentle decay,
-    // low peak so it reads as a polite tap rather than an alert. Under 0.6s total.
-    for (const [freq, at] of [[523.25, 0], [783.99, 0.12]]) {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const start = now + at;
-      gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.11, start + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
-      osc.connect(gain).connect(audioCtx.destination);
-      osc.start(start);
-      osc.stop(start + 0.4);
-    }
-  } catch (_) { /* autoplay blocked or no Web Audio: stay silent, no fallback */ }
-}
-const chimeBtn = document.getElementById("chimeBtn");
-function syncChimeBtn() { chimeBtn.textContent = chimeEnabled() ? "🔔" : "🔕"; }
-chimeBtn.onclick = () => {
-  localStorage.setItem(CHIME_KEY, chimeEnabled() ? "0" : "1");
-  syncChimeBtn();
-};
-syncChimeBtn();
-
 // Smoothness-first tuning: deeper buffer absorbs delivery jitter; corrections
 // are gentle and only kick in when the lag is persistently high, so playback
 // speed never visibly wobbles. Override with ?buffer=0.25 in the URL.
@@ -153,10 +115,6 @@ const LOW_AT = Math.max(TARGET_BUFFER * 0.45, 0.1);      // rebuild buffer below
 const HURRY_AT = Math.max(TARGET_BUFFER + 0.4, 1.0);     // anything under 1s of delay is left alone
 const JUMP_AT = HURRY_AT + 2.0;                          // hard-seek only when badly behind
 
-// Chime only on an OBSERVED idle-to-live transition: seenIdle is armed when a
-// /ws close reveals the host is idle, and consumed on the next rise into live.
-// A page that loads an already-live stream never arms it, so it stays silent.
-let seenIdle = false, prevLive = false;
 let ws = null, ms = null, sb = null, hello = null;
 let queue = [], queuedBytes = 0, retryMs = 500, hurrySince = null, lastDataAt = 0;
 let stat = { delay: 0, bytes: 0, bytesWindowStart: performance.now(), kbps: 0,
@@ -187,8 +145,6 @@ setInterval(() => { raf.fps = raf.count - raf.last; raf.last = raf.count; }, 100
 if (params.get("stats") === "1") statsEl.classList.add("show");
 
 function setStatus(live, text) {
-  if (live && !prevLive && seenIdle) { playChime(); seenIdle = false; }
-  prevLive = live;
   badge.classList.toggle("live", live);
   badgeText.textContent = text;
   overlayMsg.textContent = text;
@@ -243,7 +199,6 @@ function connect() {
       .then(s => {
         if (s.key) viewKey = s.key; // trusted caller: adopt the current key
         const idle = s.state === "idle";
-        if (idle) seenIdle = true; // observed idle: the next go-live earns a chime
         setStatus(false, idle ? "not streaming yet" : "reconnecting…");
       })
       .catch(() => setStatus(false, "reconnecting…"));
