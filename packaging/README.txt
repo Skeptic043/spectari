@@ -10,18 +10,18 @@ SETUP (once, ~2 minutes)
 1. Install Tailscale (tailscale.com/download) and accept the invite you
    received by email.
 2. Double-click StreamHost.exe and Start a stream. If a friend can't
-   connect, click "Fix access" in the app: it asks Windows for
+   connect, click "Open port" in the app: it asks Windows for
    administrator approval once and configures the stream port for you
    (the port is what StreamHost serves the stream on and what viewers'
    browsers connect to). You only do this once per PC.
-   If you'd rather do it up front, or "Fix access" doesn't work for
+   If you'd rather do it up front, or "Open port" doesn't work for
    some reason, right-click setup.bat -> Run as administrator instead.
    It does the same thing: reserves the stream port and adds a firewall
    rule scoped to Tailscale addresses.
 
    The firewall rule allows only Tailscale by default. To also let devices
    on your local network (LAN) reach the stream, tick "Allow LAN viewers"
-   in the app before clicking "Fix access". setup.bat always sets up
+   in the app before clicking "Open port". setup.bat always sets up
    Tailscale-only; use the app for LAN access.
 
 STREAMING
@@ -89,19 +89,19 @@ log panel). "Copy log" puts the session log plus version, system, GPU,
 and encoder info on the clipboard. Paste it when reporting a problem.
 
 - Stream page never loads: the port isn't open yet, or Tailscale isn't
-  connected on one end. Click "Fix access" in the app (or run setup.bat
+  connected on one end. Click "Open port" in the app (or run setup.bat
   as admin) and try again.
-- Status shows "THIS PC ONLY": use "Fix access" (or setup.bat) for that
-  port, restart the stream.
+- Status shows "THIS PC ONLY": click "Open port" (or run setup.bat) for
+  that port, then restart the stream.
 - Page loads but video never starts: same as above, the port that
-  viewers' browsers connect to isn't reachable yet. Re-run "Fix access"
-  or setup.bat.
+  viewers' browsers connect to isn't reachable yet. Click "Open port" again
+  or run setup.bat.
 - "Port ... is already in use": another program (often another copy of
   StreamHost still running) has that port. Close it, or set a different
   port in the app.
 - Everything looks fine on your end but nobody can connect: firewall
   state can drift (a Windows reset, another program, a network profile
-  change). Run "Fix access" again. It configures one port at a time, so
+  change). Click "Open port" again. It configures one port at a time, so
   after changing the port, run it again for the new one.
 
 License: free for personal and other noncommercial use under PolyForm
