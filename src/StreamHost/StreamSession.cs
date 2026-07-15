@@ -308,7 +308,7 @@ public sealed class StreamSession
         var lanAddrs = shareAddrs.Where(ip => !IsTailscaleAddress(ip)).ToList();
         if (lanAddrs.Count > 0)
         {
-            Console.WriteLine($"[ready] the LAN links below only work if you allowed LAN access (setup.bat or Fix access with Allow LAN):");
+            Console.WriteLine($"[ready] the LAN links below only work if you allowed LAN access (setup.bat or Open port with Allow LAN):");
             foreach (var ip in lanAddrs)
                 Console.WriteLine($"[ready]           http://{ip}:{_config.Port}/{keySuffix}");
         }
