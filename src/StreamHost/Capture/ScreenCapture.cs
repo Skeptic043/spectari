@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -9,12 +10,42 @@ using Windows.Graphics.DirectX.Direct3D11;
 namespace StreamHost.Capture;
 
 /// <summary>
-/// Windows.Graphics.Capture of one monitor. Keeps the most recent frame in a GPU
+/// Windows.Graphics.Capture of one monitor or window. Keeps the most recent frame in a GPU
 /// texture; TryReadFrame does a staging readback of that frame on demand, so the
 /// caller controls the output frame rate independent of the capture rate.
 /// </summary>
 public sealed class ScreenCapture : ICaptureSource
 {
+    private const DirectXPixelFormat CaptureFormat = DirectXPixelFormat.B8G8R8A8UIntNormalized;
+    private const int CaptureBufferCount = 2;
+
+    private const string ScaleVertexShaderSource = """
+        struct VertexOutput
+        {
+            float4 Position : SV_POSITION;
+            float2 TexCoord : TEXCOORD0;
+        };
+
+        VertexOutput main(uint vertexId : SV_VertexID)
+        {
+            VertexOutput output;
+            float2 texCoord = float2((vertexId << 1) & 2, vertexId & 2);
+            output.Position = float4(texCoord * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+            output.TexCoord = texCoord;
+            return output;
+        }
+        """;
+
+    private const string ScalePixelShaderSource = """
+        Texture2D SourceTexture : register(t0);
+        SamplerState LinearSampler : register(s0);
+
+        float4 main(float4 position : SV_POSITION, float2 texCoord : TEXCOORD0) : SV_TARGET
+        {
+            return SourceTexture.Sample(LinearSampler, texCoord);
+        }
+        """;
+
     private readonly ID3D11Device _device;
     private readonly ID3D11DeviceContext _context;
     private readonly IDirect3DDevice _winrtDevice;
@@ -22,7 +53,14 @@ public sealed class ScreenCapture : ICaptureSource
     private readonly Direct3D11CaptureFramePool _framePool;
     private readonly GraphicsCaptureSession _session;
     private readonly ID3D11Texture2D _latest;
-    private readonly ID3D11RenderTargetView _latestRtv; // lets us black-fill _latest when the source shrinks
+    private readonly ID3D11RenderTargetView _latestRtv;
+    private ID3D11Texture2D? _scaleSource;
+    private ID3D11ShaderResourceView? _scaleSourceView;
+    private ID3D11VertexShader? _scaleVertexShader;
+    private ID3D11PixelShader? _scalePixelShader;
+    private ID3D11SamplerState? _scaleSampler;
+    private int _scaleSourceWidth;
+    private int _scaleSourceHeight;
     private readonly ID3D11Texture2D _stagingA;
     private readonly ID3D11Texture2D _stagingB;
     private bool _flip;
@@ -30,7 +68,14 @@ public sealed class ScreenCapture : ICaptureSource
     private readonly Lock _gate = new();
     private readonly AutoResetEvent _frameSignal = new(false);
     private volatile bool _hasFrame;
+    private volatile bool _disposing;
     private long _framesArrived;
+    private int _contentWidth;
+    private int _contentHeight;
+    private int _reportedContentWidth;
+    private int _reportedContentHeight;
+    private int _poolWidth;
+    private int _poolHeight;
 
     public int Width { get; }
     public int Height { get; }
@@ -106,6 +151,10 @@ public sealed class ScreenCapture : ICaptureSource
         _item = item;
         Width = _item.Size.Width & ~1;   // even-aligned for 4:2:0 chroma
         Height = _item.Size.Height & ~1;
+        _contentWidth = _poolWidth = Width;
+        _contentHeight = _poolHeight = Height;
+        _reportedContentWidth = _item.Size.Width;
+        _reportedContentHeight = _item.Size.Height;
 
         var desc = new Texture2DDescription
         {
@@ -116,9 +165,6 @@ public sealed class ScreenCapture : ICaptureSource
             Format = Format.B8G8R8A8_UNorm,
             SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default,
-            // RenderTarget so a shrunk source can be black-filled (ClearRenderTargetView)
-            // before the smaller region is copied on top — otherwise the uncovered
-            // margins keep the previous, larger frame's pixels.
             BindFlags = BindFlags.RenderTarget,
             CPUAccessFlags = CpuAccessFlags.None,
         };
@@ -141,7 +187,7 @@ public sealed class ScreenCapture : ICaptureSource
         };
 
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-            _winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, _item.Size);
+            _winrtDevice, CaptureFormat, CaptureBufferCount, _item.Size);
         _framePool.FrameArrived += OnFrameArrived;
         _session = _framePool.CreateCaptureSession(_item);
         _session.IsCursorCaptureEnabled = true;
@@ -149,54 +195,74 @@ public sealed class ScreenCapture : ICaptureSource
         _session.StartCapture();
     }
 
-    private bool _warnedResize;
-
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
         // Never let an exception escape a WinRT callback (it would kill the process
         // or vanish silently). Record the first failure so the session can stop
         // with a real diagnostic instead of streaming nothing while looking live.
+        Direct3D11CaptureFrame? frame = null;
         try
         {
-            using var frame = sender.TryGetNextFrame();
-            if (frame is null) return;
-
-            // The source can change size mid-session (game res switch, borderless/
-            // fullscreen toggle, launcher->game handoff, plain resize). Our pool and
-            // encode textures are fixed at the original size, so CLAMP the copy region
-            // to what is valid on both sides: a grown source is cropped to Width/Height,
-            // a shrunk source copies only its (smaller) valid area. Compare on the
-            // even-aligned content size so the harmless odd->even 1px rounding (an odd
-            // window is Width+1 every frame) is not read as a resize. Never stop the
-            // stream over this — the share stays live at its original dimensions.
-            int cw = frame.ContentSize.Width & ~1;
-            int ch = frame.ContentSize.Height & ~1;
-            int copyW = Math.Min(cw, Width);
-            int copyH = Math.Min(ch, Height);
-            if (!_warnedResize && (cw != Width || ch != Height))
-            {
-                _warnedResize = true;
-                Console.WriteLine($"[capture] source resized to {frame.ContentSize.Width}x{frame.ContentSize.Height}; output stays at {Width}x{Height}; restart the share for a clean full-size capture");
-            }
-
-            using var texture = D3DInterop.GetTexture(frame.Surface);
             lock (_gate)
             {
-                // A shrunk source only fills the top-left of the fixed-size _latest;
-                // the uncovered right/bottom margins would otherwise keep the previous,
-                // larger frame's pixels (stale content leaking downstream). Clear to
-                // black first whenever the copy won't cover the whole destination —
-                // only then, not on every full-size frame. A zero-sized content frame
-                // (minimized/occluded) has nothing to copy: emit a clean black frame
-                // instead of issuing an invalid zero-extent copy box.
-                bool partial = copyW < Width || copyH < Height || copyW <= 0 || copyH <= 0;
-                if (partial)
-                    _context.ClearRenderTargetView(_latestRtv, new Color4(0f, 0f, 0f, 1f));
-                if (copyW > 0 && copyH > 0)
-                    // Region copy: window sizes can be odd, our encode textures are even-aligned.
-                    // copyW/copyH are clamped to the source so the region can never exceed it.
-                    _context.CopySubresourceRegion(_latest, 0, 0, 0, 0, texture, 0,
-                        new Box(0, 0, 0, copyW, copyH, 1));
+                if (_disposing) return;
+
+                frame = sender.TryGetNextFrame();
+                if (frame is null) return;
+
+                try
+                {
+                    // Treat odd-to-even 1 px rounding as the same size so it cannot churn the pool.
+                    var contentSize = frame.ContentSize;
+                    int cw = contentSize.Width & ~1;
+                    int ch = contentSize.Height & ~1;
+
+                    if (cw != _contentWidth || ch != _contentHeight)
+                    {
+                        Console.WriteLine(
+                            $"[capture] source size changed: {_reportedContentWidth}x{_reportedContentHeight} -> {contentSize.Width}x{contentSize.Height}; output scaled to fit {Width}x{Height}; Switch source re-picks native size");
+                        _contentWidth = cw;
+                        _contentHeight = ch;
+                        _reportedContentWidth = contentSize.Width;
+                        _reportedContentHeight = contentSize.Height;
+                    }
+
+                    if (cw <= 0 || ch <= 0)
+                    {
+                        _context.ClearRenderTargetView(_latestRtv, new Color4(0f, 0f, 0f, 1f));
+                    }
+                    else if (cw != _poolWidth || ch != _poolHeight)
+                    {
+                        // WGC crops surfaces to the old pool size. Retire this frame before
+                        // recreating the pool so the next callback receives the whole source.
+                        frame.Dispose();
+                        frame = null;
+                        sender.Recreate(_winrtDevice, CaptureFormat, CaptureBufferCount, contentSize);
+                        _poolWidth = cw;
+                        _poolHeight = ch;
+                        _context.ClearRenderTargetView(_latestRtv, new Color4(0f, 0f, 0f, 1f));
+                    }
+                    else
+                    {
+                        using var texture = D3DInterop.GetTexture(frame.Surface);
+                        if (cw == Width && ch == Height)
+                        {
+                            // Region copy: window sizes can be odd, our encode textures are even-aligned.
+                            // cw/ch are even-aligned so the region can never exceed the surface.
+                            _context.CopySubresourceRegion(_latest, 0, 0, 0, 0, texture, 0,
+                                new Box(0, 0, 0, cw, ch, 1));
+                        }
+                        else
+                        {
+                            ScaleToFit(texture, cw, ch);
+                        }
+                    }
+                }
+                finally
+                {
+                    frame?.Dispose();
+                    frame = null;
+                }
             }
             _hasFrame = true;
             Interlocked.Increment(ref _framesArrived);
@@ -204,13 +270,196 @@ public sealed class ScreenCapture : ICaptureSource
         }
         catch (Exception ex)
         {
-            if (_captureError is null)
+            if (!_disposing && _captureError is null)
             {
                 _captureError = ex;
                 Console.Error.WriteLine($"[capture] frame callback failed (HRESULT 0x{ex.HResult:X8}): {ex}");
             }
         }
+        finally
+        {
+            frame?.Dispose();
+        }
     }
+
+    private unsafe void ScaleToFit(ID3D11Texture2D texture, int sourceWidth, int sourceHeight)
+    {
+        EnsureScaleResources(sourceWidth, sourceHeight);
+
+        _context.CopySubresourceRegion(_scaleSource!, 0, 0, 0, 0, texture, 0,
+            new Box(0, 0, 0, sourceWidth, sourceHeight, 1));
+        _context.ClearRenderTargetView(_latestRtv, new Color4(0f, 0f, 0f, 1f));
+
+        float scale = Math.Min((float)Width / sourceWidth, (float)Height / sourceHeight);
+        float fittedWidth = sourceWidth * scale;
+        float fittedHeight = sourceHeight * scale;
+        var viewport = new Viewport(
+            (Width - fittedWidth) * 0.5f,
+            (Height - fittedHeight) * 0.5f,
+            fittedWidth,
+            fittedHeight);
+
+        nint renderTarget = _latestRtv.NativePointer;
+        nint sourceView = _scaleSourceView!.NativePointer;
+        nint sampler = _scaleSampler!.NativePointer;
+        nint context = _context.NativePointer;
+        nint* contextMethods = *(nint**)context;
+        _context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
+        // Use the context ABI directly so Vortice cannot allocate interface arrays per frame.
+        ((delegate* unmanaged[Stdcall]<nint, nint, nint*, uint, void>)contextMethods[11])(
+            context, _scaleVertexShader!.NativePointer, null, 0);
+        ((delegate* unmanaged[Stdcall]<nint, nint, nint*, uint, void>)contextMethods[9])(
+            context, _scalePixelShader!.NativePointer, null, 0);
+        ((delegate* unmanaged[Stdcall]<nint, uint, uint, nint*, void>)contextMethods[8])(
+            context, 0, 1, &sourceView);
+        ((delegate* unmanaged[Stdcall]<nint, uint, uint, nint*, void>)contextMethods[10])(
+            context, 0, 1, &sampler);
+        ((delegate* unmanaged[Stdcall]<nint, uint, Viewport*, void>)contextMethods[44])(
+            context, 1, &viewport);
+        ((delegate* unmanaged[Stdcall]<nint, uint, nint*, nint, void>)contextMethods[33])(
+            context, 1, &renderTarget, 0);
+        try
+        {
+            _context.Draw(3, 0);
+        }
+        finally
+        {
+            nint none = 0;
+            ((delegate* unmanaged[Stdcall]<nint, uint, uint, nint*, void>)contextMethods[8])(
+                context, 0, 1, &none);
+            ((delegate* unmanaged[Stdcall]<nint, uint, nint*, nint, void>)contextMethods[33])(
+                context, 0, null, 0);
+        }
+    }
+
+    private void EnsureScaleResources(int sourceWidth, int sourceHeight)
+    {
+        if (_scaleVertexShader is null)
+            CreateScalePipeline();
+
+        if (_scaleSourceWidth == sourceWidth && _scaleSourceHeight == sourceHeight)
+            return;
+
+        var desc = new Texture2DDescription
+        {
+            Width = (uint)sourceWidth,
+            Height = (uint)sourceHeight,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Format.B8G8R8A8_UNorm,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource,
+            CPUAccessFlags = CpuAccessFlags.None,
+        };
+
+        ID3D11Texture2D? newSource = null;
+        ID3D11ShaderResourceView? newView = null;
+        try
+        {
+            newSource = _device.CreateTexture2D(desc);
+            newView = _device.CreateShaderResourceView(newSource, null);
+        }
+        catch
+        {
+            newView?.Dispose();
+            newSource?.Dispose();
+            throw;
+        }
+
+        _scaleSourceView?.Dispose();
+        _scaleSource?.Dispose();
+        _scaleSource = newSource;
+        _scaleSourceView = newView;
+        _scaleSourceWidth = sourceWidth;
+        _scaleSourceHeight = sourceHeight;
+    }
+
+    private unsafe void CreateScalePipeline()
+    {
+        ID3D11VertexShader? vertexShader = null;
+        ID3D11PixelShader? pixelShader = null;
+        ID3D11SamplerState? sampler = null;
+        try
+        {
+            byte[] vertexBytecode = CompileShader(ScaleVertexShaderSource, "vs_4_0");
+            byte[] pixelBytecode = CompileShader(ScalePixelShaderSource, "ps_4_0");
+            fixed (byte* vertexPointer = vertexBytecode)
+                vertexShader = _device.CreateVertexShader(vertexPointer, (nuint)vertexBytecode.Length, null);
+            fixed (byte* pixelPointer = pixelBytecode)
+                pixelShader = _device.CreatePixelShader(pixelPointer, (nuint)pixelBytecode.Length, null);
+            sampler = _device.CreateSamplerState(new SamplerDescription
+            {
+                Filter = Filter.MinMagMipLinear,
+                AddressU = TextureAddressMode.Clamp,
+                AddressV = TextureAddressMode.Clamp,
+                AddressW = TextureAddressMode.Clamp,
+                MaxAnisotropy = 1,
+                ComparisonFunc = ComparisonFunction.Never,
+                MinLOD = 0f,
+                MaxLOD = float.MaxValue,
+            });
+        }
+        catch
+        {
+            sampler?.Dispose();
+            pixelShader?.Dispose();
+            vertexShader?.Dispose();
+            throw;
+        }
+
+        _scaleVertexShader = vertexShader;
+        _scalePixelShader = pixelShader;
+        _scaleSampler = sampler;
+    }
+
+    private static unsafe byte[] CompileShader(string source, string target)
+    {
+        nint code = 0;
+        nint errors = 0;
+        try
+        {
+            int result = D3DCompile(source, (nuint)source.Length, null, 0, 0, "main", target, 0, 0, out code, out errors);
+            if (result < 0)
+            {
+                string detail = errors == 0
+                    ? $"HRESULT 0x{result:X8}"
+                    : Marshal.PtrToStringAnsi(GetBlobBuffer(errors), checked((int)GetBlobSize(errors)))?.TrimEnd('\0', '\r', '\n')
+                        ?? $"HRESULT 0x{result:X8}";
+                throw new InvalidOperationException($"D3D11 scale shader compilation failed: {detail}");
+            }
+
+            int length = checked((int)GetBlobSize(code));
+            byte[] bytecode = new byte[length];
+            Marshal.Copy(GetBlobBuffer(code), bytecode, 0, length);
+            return bytecode;
+        }
+        finally
+        {
+            if (errors != 0) Marshal.Release(errors);
+            if (code != 0) Marshal.Release(code);
+        }
+    }
+
+    private static unsafe nint GetBlobBuffer(nint blob) =>
+        ((delegate* unmanaged[Stdcall]<nint, nint>)(*(nint**)blob)[3])(blob);
+
+    private static unsafe nuint GetBlobSize(nint blob) =>
+        ((delegate* unmanaged[Stdcall]<nint, nuint>)(*(nint**)blob)[4])(blob);
+
+    [DllImport("d3dcompiler_47.dll", CharSet = CharSet.Ansi)]
+    private static extern int D3DCompile(
+        [MarshalAs(UnmanagedType.LPStr)] string source,
+        nuint sourceLength,
+        [MarshalAs(UnmanagedType.LPStr)] string? sourceName,
+        nint defines,
+        nint include,
+        [MarshalAs(UnmanagedType.LPStr)] string entryPoint,
+        [MarshalAs(UnmanagedType.LPStr)] string target,
+        uint flags1,
+        uint flags2,
+        out nint code,
+        out nint errors);
 
     /// <summary>Copies the most recent frame into <paramref name="buffer"/> as tightly packed BGRA.
     /// Pipelined ping-pong: we queue this tick's GPU copy into one staging texture and map the
@@ -284,15 +533,25 @@ public sealed class ScreenCapture : ICaptureSource
         // Stop the frame source BEFORE disposing anything a late callback could
         // touch — the signal was previously disposed first, letting an in-flight
         // OnFrameArrived crash on a dead AutoResetEvent.
+        lock (_gate)
+            _disposing = true;
         _framePool.FrameArrived -= OnFrameArrived;
         _session.Dispose();
         _framePool.Dispose();
         _frameSignal.Dispose();
-        _latestRtv.Dispose();
-        _latest.Dispose();
-        _stagingA.Dispose();
-        _stagingB.Dispose();
-        _context.Dispose();
-        _device.Dispose();
+        lock (_gate)
+        {
+            _scaleSourceView?.Dispose();
+            _scaleSource?.Dispose();
+            _scaleSampler?.Dispose();
+            _scalePixelShader?.Dispose();
+            _scaleVertexShader?.Dispose();
+            _latestRtv.Dispose();
+            _latest.Dispose();
+            _stagingA.Dispose();
+            _stagingB.Dispose();
+            _context.Dispose();
+            _device.Dispose();
+        }
     }
 }
