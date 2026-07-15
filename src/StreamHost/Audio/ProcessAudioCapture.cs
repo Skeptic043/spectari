@@ -45,6 +45,7 @@ public sealed class ProcessAudioCapture : IDisposable
     private const int BytesPerFrame = Channels * 4;
 
     private static readonly byte[] SilenceBlock = new byte[SampleRate * BytesPerFrame / 100]; // 10 ms
+    private const int MaxInitialLeadInSeconds = 5;
     // Field-tunable ceiling on how much silence we will inject to resync after a
     // stall (~2 s). Beyond it the excess dropped duration is accepted as a bounded
     // residual rather than dumping a huge run of silence to catch up.
@@ -66,7 +67,7 @@ public sealed class ProcessAudioCapture : IDisposable
     // uncounted here and owed back as silence, so a drop advances nothing net.
     private long _deliveredFrames;
 
-    public ProcessAudioCapture(uint targetPid, Action<byte[], int> onSamples)
+    public ProcessAudioCapture(uint targetPid, long videoEpochTicks, Action<byte[], int> onSamples)
     {
         _onSamples = onSamples;
         _client = ActivateProcessLoopback(targetPid);
@@ -75,6 +76,7 @@ public sealed class ProcessAudioCapture : IDisposable
         // Initialize, GetService, or Start throws, release the client before
         // rethrowing — otherwise a half-built capture leaks it and its threads
         // never start to be disposed.
+        bool clientStarted = false;
         try
         {
             var format = new WAVEFORMATEX
@@ -101,13 +103,29 @@ public sealed class ProcessAudioCapture : IDisposable
             _capture = (IAudioCaptureClient)Marshal.GetObjectForIUnknown(capturePtr);
             Marshal.Release(capturePtr);
 
+            long captureStartTicks = Stopwatch.GetTimestamp();
             Marshal.ThrowExceptionForHR(_client.Start());
+            clientStarted = true;
+
+            // This direct prefix aligns ffmpeg's zero-based audio input with the
+            // first video enqueue. It deliberately bypasses owed-silence catchup:
+            // that bounded machinery is only for drops after capture has started.
+            long leadInFrames = GetLeadInFrames(videoEpochTicks, captureStartTicks);
+            int leadInBytes = checked((int)(leadInFrames * BytesPerFrame));
+            if (leadInBytes > 0)
+            {
+                _queue.Add((new byte[leadInBytes], leadInBytes));
+                _deliveredFrames += leadInFrames;
+            }
+            long leadInMs = (leadInFrames * 1000 + SampleRate / 2) / SampleRate;
+            Console.WriteLine($"[audio] aligned to video timeline (+{leadInMs} ms lead-in silence)");
         }
         catch
         {
             // REL-2: release both COM objects we may have acquired before the throw.
             // _capture is a readonly field — it reads null unless GetService ran, so
             // the null check keeps the pre-GetService failure path safe.
+            if (clientStarted) { try { _client.Stop(); } catch { } }
             try { if (_capture is not null) Marshal.FinalReleaseComObject(_capture); } catch { }
             try { Marshal.FinalReleaseComObject(_client); } catch { }
             throw;
@@ -121,6 +139,14 @@ public sealed class ProcessAudioCapture : IDisposable
         _thread.Start();
         // The "capture started" line is logged from CaptureLoop after MMCSS setup so
         // it can report truthfully whether Pro Audio scheduling was actually granted.
+    }
+
+    internal static long GetLeadInFrames(long videoEpochTicks, long captureStartTicks)
+    {
+        // A corrupt or extremely late epoch cannot inject more than five seconds.
+        long elapsedTicks = Math.Clamp(captureStartTicks - videoEpochTicks,
+            0, Stopwatch.Frequency * MaxInitialLeadInSeconds);
+        return (elapsedTicks * SampleRate + Stopwatch.Frequency / 2) / Stopwatch.Frequency;
     }
 
     private void CaptureLoop()
