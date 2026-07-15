@@ -87,14 +87,14 @@ public sealed class MainForm : Form
         public int Port { get; set; } = 8093;
         public string StreamName { get; set; } = ""; // shown to viewers; empty = machine name
         public string Encoder { get; set; } = "auto";
-        // Set only when a Fix access with "Allow LAN" checked actually succeeded,
+        // Set only when Open port with "Allow LAN" checked actually succeeded,
         // so the app knows LAN addresses are reachable (not merely requested).
         public bool AllowLan { get; set; }
-        // The exact port that Fix access last configured. LAN is advertised only
+        // The exact port that Open port last configured. LAN is advertised only
         // when AllowLan is set AND the port in play matches this, so editing the
         // port after a successful fix can't advertise LAN on a port never opened.
         // A missing value deserializes to 0, which matches no real port, so LAN
-        // stays off until the next successful Fix access on that port.
+        // stays off until the next successful Open port on that port.
         public int AllowLanPort { get; set; }
     }
 
@@ -114,11 +114,10 @@ public sealed class MainForm : Form
     // 26px: at 24 the label's descenders (p/y/g) clipped against the border.
     private readonly Button _bundleButton = new() { Text = "Copy log", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
     private readonly Button _openLogsButton = new() { Text = "Open logs", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-    private readonly Button _fixPortButton = new() { Text = "Fix access (open port)", Width = 142, Height = 26, Visible = false, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-    // Short label (the 760px window's status row is crowded); full meaning is in
-    // the tooltip. Default off: Tailscale-only is the secure default. Shares the
-    // Fix access button's visibility.
-    private readonly CheckBox _allowLanCheck = new() { Text = "Allow LAN viewers", AutoSize = true, Checked = false, Visible = false, Anchor = AnchorStyles.Right, Margin = new Padding(0, 5, 8, 0) };
+    private readonly Button _fixPortButton = new() { Text = "Open port", Width = 82, Height = 26 };
+    // Default off: Tailscale-only is the secure default. The tooltip carries the
+    // full scope because the checkbox sits in the compact Misc group.
+    private readonly CheckBox _allowLanCheck = new() { Text = "Allow LAN viewers", AutoSize = true, Checked = false, Margin = new Padding(8, 5, 0, 0) };
     private readonly ToolTip _toolTip = new();
     private readonly NumericUpDown _portInput = new() { Minimum = 1024, Maximum = 65535, Value = 8093, Width = 80 };
     private readonly Button _startButton = new() { Text = "▶  Start streaming", Width = 160, Height = 38 };
@@ -154,10 +153,10 @@ public sealed class MainForm : Form
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
     private bool _refreshingSourceOptions; // suppresses preset events caused by Native relabeling
     // Persisted "LAN access was actually applied" flag: set only on a successful
-    // Fix access with Allow LAN checked, never on a mere checkbox toggle. Gates
+    // Open port with Allow LAN checked, never on a mere checkbox toggle. Gates
     // whether LAN addresses are treated as reachable for links and status.
     private bool _allowLanApplied;
-    // The port Fix access last configured. LAN gating is per-port (LanAppliedForPort):
+    // The port last configured by Open port. LAN gating is per-port (LanAppliedForPort):
     // _allowLanApplied alone let an edit to the port field advertise LAN on a port
     // that was never opened, since the helper had configured a different live port.
     private int _allowLanPort;
@@ -201,7 +200,7 @@ public sealed class MainForm : Form
     // lambda would root every dead form forever and fan each log line out to all
     // of them.
     private Action<string>? _logHandler;
-    private bool _fixingPort; // guards the elevated Fix-access helper against re-entry
+    private bool _fixingPort; // guards the elevated Open port helper against re-entry
 
     public MainForm()
     {
@@ -251,14 +250,28 @@ public sealed class MainForm : Form
         var miscGroup = MakeGroup("Misc", 0);
         miscGroup.Dock = DockStyle.Fill;
         miscGroup.Margin = new Padding(3, 0, 0, 0);
-        var miscGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
+        var miscGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
         miscGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         miscGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         miscGrid.Controls.Add(new Label { Text = "Name:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 0);
         miscGrid.Controls.Add(_nameInput, 1, 0);
         miscGrid.Controls.Add(new Label { Text = "Port:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 1);
         miscGrid.Controls.Add(_portInput, 1, 1);
+        miscGrid.Controls.Add(new Label { Text = "Access:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 2);
+        var portAccessGroup = new FlowLayoutPanel
+        {
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            Margin = new Padding(0), BackColor = Bg,
+        };
+        portAccessGroup.Controls.Add(_fixPortButton);
+        portAccessGroup.Controls.Add(_allowLanCheck);
+        miscGrid.Controls.Add(portAccessGroup, 1, 2);
         _nameInput.Margin = new Padding(3, 5, 3, 0);
+        _toolTip.SetToolTip(_allowLanCheck,
+            "Also allow devices on your local network, not just Tailscale, to reach this stream");
+        _toolTip.SetToolTip(_fixPortButton,
+            "Asks for administrator approval once and opens the current port for viewers (Tailscale-only unless Allow LAN is checked)");
         miscGroup.Controls.Add(miscGrid);
 
         optionsRow.Controls.Add(qualityGroup, 0, 0);
@@ -278,30 +291,15 @@ public sealed class MainForm : Form
         // size / DPI scaling (manual X-positions drifted off the edge).
         // Height/bottom padding leave room for the status text's descenders and a
         // couple px of gap above the log box (the amber LIVE line sat flush to it).
-        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Bg, ColumnCount = 4, Padding = new Padding(12, 4, 8, 2) };
+        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Bg, ColumnCount = 3, Padding = new Padding(12, 4, 8, 2) };
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        // [Allow LAN][Fix access] ride together in a right-anchored strip so the
-        // extra checkbox doesn't cost a statusPanel column or shove Copy log.
-        var fixAccessGroup = new FlowLayoutPanel
-        {
-            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-            Margin = new Padding(0), Anchor = AnchorStyles.Right, BackColor = Bg,
-        };
-        fixAccessGroup.Controls.Add(_allowLanCheck);
-        fixAccessGroup.Controls.Add(_fixPortButton);
-        _toolTip.SetToolTip(_allowLanCheck,
-            "Also allow devices on your local network, not just Tailscale, to reach this stream");
         statusPanel.Controls.Add(_statusLabel, 0, 0);
-        statusPanel.Controls.Add(fixAccessGroup, 1, 0);
-        statusPanel.Controls.Add(_openLogsButton, 2, 0);
-        statusPanel.Controls.Add(_bundleButton, 3, 0);
+        statusPanel.Controls.Add(_openLogsButton, 1, 0);
+        statusPanel.Controls.Add(_bundleButton, 2, 0);
         _toolTip.SetToolTip(_openLogsButton, "Open the folder containing the log file");
         _statusLabel.Anchor = AnchorStyles.Left;
-        _fixPortButton.Anchor = AnchorStyles.Right;
         _openLogsButton.Anchor = AnchorStyles.Right;
         _bundleButton.Anchor = AnchorStyles.Right;
         _statusLabel.ForeColor = Dim;
@@ -579,7 +577,7 @@ public sealed class MainForm : Form
         if (config is null) return;
 
         if (config.Port != 8093)
-            AppendLog("Note: setup.bat / Fix access configure one port at a time; other ports need their own run.");
+            AppendLog("Note: setup.bat / Open port configure one port at a time; other ports need their own run.");
 
         _retriedCpu = false;
         SaveSettings();
@@ -1021,8 +1019,6 @@ public sealed class MainForm : Form
         _startButton.BackColor = AccentDark;
         Text = "StreamHost";
         _livePort = 0;
-        _fixPortButton.Visible = false;
-        _allowLanCheck.Visible = false;
         SetLiveLock(false);
         // A run that actually served viewers rotates the viewer key, so links from
         // that run stop working (the per-run key model). A start that never went
@@ -1284,10 +1280,8 @@ public sealed class MainForm : Form
         }
         if (_session!.LocalOnly)
         {
-            _fixPortButton.Visible = true;
-            _allowLanCheck.Visible = true;
             _statusLabel.ForeColor = Color.Goldenrod;
-            _statusLabel.Text = $"LIVE, THIS PC ONLY: click Fix access to let viewers reach port {_livePort}";
+            _statusLabel.Text = $"LIVE, THIS PC ONLY: click Open port in Misc to let viewers reach port {_livePort}";
         }
         else
         {
@@ -1300,18 +1294,14 @@ public sealed class MainForm : Form
                 && addrs.Any(a => !StreamSession.IsTailscaleAddress(a));
             if (tailscaleReachable || lanReachable)
             {
-                _fixPortButton.Visible = false;
-                _allowLanCheck.Visible = false;
                 _statusLabel.ForeColor = Green;
                 string lanTag = tailscaleReachable ? "" : " (LAN)";
                 _statusLabel.Text = $"LIVE{lanTag} · {_session.Description} · {EncoderLabel(_session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
             }
             else
             {
-                _fixPortButton.Visible = true;
-                _allowLanCheck.Visible = true;
                 _statusLabel.ForeColor = Color.Goldenrod;
-                _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or enable Allow LAN then Fix access.";
+                _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or check Allow LAN and click Open port in Misc.";
             }
         }
         Text = $"StreamHost - LIVE ({b.ViewerCount} watching)";
@@ -1328,7 +1318,7 @@ public sealed class MainForm : Form
         _ => encoder,
     };
 
-    /// <summary>LAN is reachable for a port only when a Fix access with Allow LAN
+    /// <summary>LAN is reachable for a port only when Open port with Allow LAN
     /// succeeded for THAT port. Guards against advertising LAN on a port the helper
     /// never opened (e.g. the field was edited to a new port after the fix).</summary>
     private bool LanAppliedForPort(int port) => _allowLanApplied && port == _allowLanPort;
@@ -1386,22 +1376,18 @@ public sealed class MainForm : Form
     private void CopyLanLink()
     {
         int port = LinkPort();
-        if (ActiveServerIsLocalOnly())
-        {
-            AppendLog($"LAN link unavailable: Fix access must succeed with Allow LAN for port {port}.");
-            return;
-        }
-        if (!LanAppliedForPort(port))
-        {
-            AppendLog($"LAN link unavailable: use Fix access with Allow LAN for port {port}.");
-            return;
-        }
-        if (LanShareAddressForPort(port) is not { } lan)
+        var lan = StreamSession.GetShareAddresses(includeLan: true)
+            .FirstOrDefault(a => !StreamSession.IsTailscaleAddress(a));
+        if (lan is null)
         {
             AppendLog("LAN link unavailable: no LAN address was found for this PC.");
             return;
         }
         CopyLink(BuildViewerUrl(lan, port, ""));
+        if (ActiveServerIsLocalOnly())
+            AppendLog($"Warning: the server is bound to localhost only. This LAN link cannot work until Open port succeeds for port {port}.");
+        else if (!LanAppliedForPort(port))
+            AppendLog($"Warning: StreamHost has no record of LAN access being opened for port {port}. This link may not load on other devices; if it does not, check Allow LAN and click Open port.");
     }
 
     private void OpenWatchWindow()
@@ -1555,6 +1541,11 @@ public sealed class MainForm : Form
                             _statusLabel.Text = "Restarting…";
                             _statusLabel.ForeColor = Color.Goldenrod;
                             _session.RequestStop();
+                        }
+                        else if (_session is null)
+                        {
+                            RestartIdleServer();
+                            UpdateLinkBox();
                         }
                     }
                     else if (code == -2)
