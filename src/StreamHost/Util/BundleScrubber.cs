@@ -82,7 +82,7 @@ public static class BundleScrubber
             s = UserProfile.Replace(s, "%USERPROFILE%");
 
             // The urlacl owner line "MACHINE\username" (PortSetup builds
-            // {UserDomainName}\{UserName}; Fix-access logs the owner) is the one
+            // {UserDomainName}\{UserName}; Open port logs the owner) is the one
             // place the username leaks outside a path. Anchor on the backslash so
             // only that field is touched: the machine name before it stays (kept
             // by design at Moderate), and nothing like "--max-viewers" can match.

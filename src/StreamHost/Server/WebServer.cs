@@ -52,7 +52,7 @@ public sealed class WebServer : IDisposable
         if (BoundPrefix.Contains("localhost"))
         {
             Console.WriteLine(_broadcaster is null
-                ? $"[http] holding page is localhost-only for now; port {port} opens up via Fix access or setup.bat."
+                ? $"[http] holding page is localhost-only for now; port {port} opens up via Open port or setup.bat."
                 : $"[http] WARNING: bound to localhost only. Run setup.bat {port} as administrator, then restart the stream.");
         }
     }

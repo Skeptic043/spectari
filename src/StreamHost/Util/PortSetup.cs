@@ -7,7 +7,7 @@ namespace StreamHost.Util;
 /// the http.sys URL for the streaming user and open the firewall. The firewall
 /// rule is scoped to Tailscale only by default; the caller opts in to the
 /// private LAN ranges via <paramref name="allowLan"/>. Runs silently (no
-/// console) because it is invoked via UAC from the "Fix access" button; the
+/// console) because it is invoked via UAC from the "Open port" button; the
 /// caller reads the exit code.
 /// Exit codes: 0 ok, 2 urlacl failed, 3 firewall rule failed.
 /// </summary>

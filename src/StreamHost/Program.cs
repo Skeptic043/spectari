@@ -23,7 +23,7 @@ internal static class Program
     {
         timeBeginPeriod(1);
 
-        // Elevated self-invocation from the "Fix access" button: configure the
+        // Elevated self-invocation from the "Open port" button: configure the
         // port silently and report via exit code. No console, no UI.
         if (args.Length >= 2 && args[0] == "--setup-port" && int.TryParse(args[1], out int setupPort))
         {
@@ -39,7 +39,7 @@ internal static class Program
             }
             // setup.bat runs elevated in a visible console and passes --setup-confirm
             // so a reservation owned by someone else isn't silently destroyed. The
-            // "Fix access" button does its own owner check on the UI thread before
+            // "Open port" button does its own owner check on the UI thread before
             // elevating, so its silent relaunch never passes the flag.
             if (confirm)
             {
@@ -166,7 +166,7 @@ internal static class Program
     }
 
     /// <summary>Interactive (setup.bat) guard: refuse to replace a URL reservation
-    /// owned by another account without a typed yes. The "Fix access" button makes
+    /// owned by another account without a typed yes. The "Open port" button makes
     /// this same check before it elevates; the bat relies on this instead. Fails
     /// CLOSED — if the owner can't be read, or there's no console to read a reply
     /// from, it keeps the existing reservation rather than destroying a foreign
