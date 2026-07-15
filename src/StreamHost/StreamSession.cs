@@ -69,6 +69,11 @@ public sealed class StreamSession
     // either find the instance or prevent it from being created at all.
     private readonly Lock _audioGate = new();
     private Audio.ProcessAudioCapture? _audioCapture;
+    // The session A/V epoch is produced exactly once by the pacing loop at its
+    // first successful FrameWriter.Enqueue. Audio waits for this timestamp so
+    // both raw ffmpeg inputs describe the same real-time origin.
+    private readonly TaskCompletionSource<long> _videoEpoch =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _encoderStalled;
     private volatile CaptureAdapterIdentity? _captureAdapter;
 
@@ -243,40 +248,7 @@ public sealed class StreamSession
         if (audioPipe is not null)
         {
             uint audioPid = _config.AudioPid;
-            _ = audioPipe.WaitForConnectionAsync(ct).ContinueWith(t =>
-            {
-                if (t.IsFaulted || t.IsCanceled) return;
-                void WriteToPipe(byte[] buf, int len)
-                {
-                    try { audioPipe.Write(buf, 0, len); } catch { /* pipe closed on shutdown */ }
-                }
-                try
-                {
-                    lock (_audioGate)
-                    {
-                        if (ct.IsCancellationRequested) return; // stopped before we got here
-                        _audioCapture = new Audio.ProcessAudioCapture(audioPid, WriteToPipe);
-                    }
-                    Console.WriteLine($"[audio] capturing audio from process {audioPid}");
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[audio] process loopback failed ({ex.Message}); feeding silence instead.");
-                    var silence = new byte[Audio.ProcessAudioCapture.SampleRate * Audio.ProcessAudioCapture.Channels * 4 / 100];
-                    new Thread(() =>
-                    {
-                        var sw = Stopwatch.StartNew();
-                        long sent = 0;
-                        while (!ct.IsCancellationRequested)
-                        {
-                            long expected = sw.ElapsedMilliseconds / 10;
-                            while (sent < expected) { WriteToPipe(silence, silence.Length); sent++; }
-                            Thread.Sleep(5);
-                        }
-                    })
-                    { IsBackground = true, Name = "audio-silence" }.Start();
-                }
-            }, TaskScheduler.Default);
+            _ = StartAudioAsync(audioPipe, audioPid, ct);
         }
 
         var broadcaster = new Broadcaster
@@ -405,6 +377,71 @@ public sealed class StreamSession
         _cts.Cancel();
     }
 
+    private async Task StartAudioAsync(NamedPipeServerStream audioPipe, uint audioPid,
+        CancellationToken ct)
+    {
+        long videoEpochTicks;
+        try
+        {
+            await audioPipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
+            // Consume the epoch only after ffmpeg connects. Cancellation must win
+            // if teardown begins before the first video frame is enqueued.
+            videoEpochTicks = await _videoEpoch.Task.WaitAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Connection failure and session teardown both leave audio inactive.
+            return;
+        }
+
+        void WriteToPipe(byte[] buf, int len)
+        {
+            try { audioPipe.Write(buf, 0, len); } catch { /* pipe closed on shutdown */ }
+        }
+
+        try
+        {
+            lock (_audioGate)
+            {
+                if (ct.IsCancellationRequested) return; // stopped while waiting for the epoch
+                _audioCapture = new Audio.ProcessAudioCapture(audioPid, videoEpochTicks, WriteToPipe);
+            }
+            Console.WriteLine($"[audio] capturing audio from process {audioPid}");
+        }
+        catch (Exception ex)
+        {
+            if (ct.IsCancellationRequested) return;
+            Console.Error.WriteLine($"[audio] process loopback failed ({ex.Message}); feeding silence instead.");
+            var silence = new byte[Audio.ProcessAudioCapture.SampleRate * Audio.ProcessAudioCapture.Channels * 4 / 100];
+            long fallbackStartTicks = Stopwatch.GetTimestamp();
+            long leadInFrames = Audio.ProcessAudioCapture.GetLeadInFrames(videoEpochTicks, fallbackStartTicks);
+            long leadInMs = (leadInFrames * 1000 + Audio.ProcessAudioCapture.SampleRate / 2)
+                / Audio.ProcessAudioCapture.SampleRate;
+            Console.WriteLine($"[audio] aligned to video timeline (+{leadInMs} ms lead-in silence)");
+
+            new Thread(() =>
+            {
+                const int bytesPerFrame = Audio.ProcessAudioCapture.Channels * 4;
+                long sentBytes = 0;
+                while (!ct.IsCancellationRequested)
+                {
+                    long elapsedTicks = Math.Max(0, Stopwatch.GetTimestamp() - fallbackStartTicks);
+                    long expectedFrames = leadInFrames
+                        + elapsedTicks * Audio.ProcessAudioCapture.SampleRate / Stopwatch.Frequency;
+                    long expectedBytes = expectedFrames * bytesPerFrame;
+                    while (sentBytes < expectedBytes)
+                    {
+                        int chunk = (int)Math.Min(silence.Length, expectedBytes - sentBytes);
+                        WriteToPipe(silence, chunk);
+                        sentBytes += chunk;
+                    }
+                    Thread.Sleep(5);
+                }
+            })
+            { IsBackground = true, Name = "audio-silence" }.Start();
+        }
+    }
+
     private string PacingLoop(ICaptureSource capture, FfmpegEncoder ffmpeg, Broadcaster broadcaster,
         Task splitterTask, Task serverTask, CancellationToken ct)
     {
@@ -418,6 +455,7 @@ public sealed class StreamSession
         int graceMs = Math.Max(1000 / fps * 2 / 5, 2);
         long next = Stopwatch.GetTimestamp() + ticksPerFrame;
         long lastVersion = 0;
+        bool videoEpochProduced = false;
         long freshCount = 0, dupCount = 0, pacingSlips = 0, lastCompositorFrames = 0;
         long lastReport = Stopwatch.GetTimestamp();
         long reportInterval = Stopwatch.Frequency * 2;
@@ -457,7 +495,15 @@ public sealed class StreamSession
 
             if (capture.TryReadFrame(buffer))
             {
+                // Produce the A/V epoch at the first enqueue toward ffmpeg. The
+                // audio continuation cannot construct capture until this succeeds.
+                long enqueueTicks = videoEpochProduced ? 0 : Stopwatch.GetTimestamp();
                 writer.Enqueue(buffer);
+                if (!videoEpochProduced)
+                {
+                    _videoEpoch.TrySetResult(enqueueTicks);
+                    videoEpochProduced = true;
+                }
                 if (fresh) freshCount++; else dupCount++;
             }
             else
