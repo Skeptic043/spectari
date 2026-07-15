@@ -235,4 +235,6 @@ saying thanks: [ko-fi.com/skeptic043](https://ko-fi.com/skeptic043).
 
 ## License
 
-PolyForm Noncommercial 1.0.0. Free for noncommercial use. See LICENSE.
+StreamHost is free for personal and other noncommercial use under
+[PolyForm Noncommercial 1.0.0](LICENSE). Commercial use is not included.
+Contact the maintainer through GitHub regarding commercial licensing.
