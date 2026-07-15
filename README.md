@@ -47,7 +47,7 @@ with privacy addons, which is a big part of why this exists.
    anywhere, run StreamHost.exe.
 2. Pick what to share and a quality preset, click Start streaming.
 3. Click Copy link and send it to whoever is watching.
-4. If someone can't connect, click "Fix access" in the app. It asks for
+4. If someone can't connect, click "Open port" in the app. It asks for
    administrator approval once and opens the stream port.
 
 If you prefer a script, running setup.bat as administrator does the same
@@ -132,8 +132,8 @@ The model in plain terms, so you can decide whether it fits your use:
 - **What can reach the host.** Out of the box, the stream port accepts only
   Tailscale addresses, and nothing is reachable from the public internet:
   no public endpoint, no relay, no port forwarding. Local network access is
-  an explicit opt-in. Tick "Allow LAN viewers" and run Fix access, and the
-  port also accepts your local network.
+  an explicit opt-in. Tick "Allow LAN viewers" and click "Open port" to let
+  the port accept your local network too.
 - **What the viewer key does.** Each stream start generates a random key
   that becomes part of the link. The stream page and the video itself
   require it, so a bare address or an old link does not work. The status
@@ -160,10 +160,10 @@ The model in plain terms, so you can decide whether it fits your use:
 ## Common issues
 
 - The page never loads: the port isn't open on the host yet, or Tailscale
-  isn't connected on one end. Click "Fix access" in the app, check both
+  isn't connected on one end. Click "Open port" in the app, check both
   Tailscale icons, try again.
-- Status says "LIVE, THIS PC ONLY": same thing. "Fix access" opens the
-  port, then the stream restarts itself.
+- Status says "LIVE, THIS PC ONLY": same thing. Click "Open port"; the
+  stream restarts itself after the port is configured.
 - The page says the stream needs its viewer key: the stream was restarted
   and the old link went stale. Send a fresh link, or have them use Find
   streams in the Watch window.
@@ -172,7 +172,7 @@ The model in plain terms, so you can decide whether it fits your use:
   access again. It configures one port at a time, so after changing the
   port, run it again for the new one; LAN access in particular does not
   carry over from a previous port. And if you streamed Tailscale-only but
-  now want LAN viewers, tick "Allow LAN viewers" and run Fix access again
+  now want LAN viewers, tick "Allow LAN viewers" and click "Open port" again
   on the same port.
 - A fullscreen game shows a frozen frame: share the whole monitor instead
   of the window, or set the game to borderless. Some exclusive-fullscreen
