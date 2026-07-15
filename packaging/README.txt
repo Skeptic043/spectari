@@ -103,3 +103,7 @@ and encoder info on the clipboard. Paste it when reporting a problem.
   state can drift (a Windows reset, another program, a network profile
   change). Run "Fix access" again. It configures one port at a time, so
   after changing the port, run it again for the new one.
+
+License: free for personal and other noncommercial use under PolyForm
+Noncommercial 1.0.0 (see LICENSE.txt). Commercial use is not included;
+contact the maintainer through GitHub regarding commercial licensing.
