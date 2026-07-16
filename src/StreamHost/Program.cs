@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using StreamHost.Capture;
 using StreamHost.Ui;
@@ -21,6 +22,11 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // WinForms needs Windows culture data for input-language messages, while
+        // StreamHost's own numeric, version, and command formatting stays invariant.
+        CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+        CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
+
         timeBeginPeriod(1);
 
         // Elevated self-invocation from the "Open port" button: configure the
