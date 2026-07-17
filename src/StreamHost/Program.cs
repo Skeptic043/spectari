@@ -22,6 +22,9 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 0)
+            Util.ConsoleMirror.Install();
+
         // WinForms needs Windows culture data for input-language messages, while
         // StreamHost's own numeric, version, and command formatting stays invariant.
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
@@ -61,11 +64,16 @@ internal static class Program
         {
             // Already running? Surface that window instead of starting a second
             // process that would just collide on the port and confuse the user.
+            Console.WriteLine("[boot] single-instance check start");
             if (!Util.SingleInstance.TryAcquire())
+            {
+                Console.WriteLine("[boot] single-instance check found an existing instance");
                 return 0;
+            }
 
-            Util.ConsoleMirror.Install();
+            Console.WriteLine("[boot] single-instance check complete");
             InstallCrashLogging();
+            Console.WriteLine("[boot] crash handlers installed");
             Encode.FfmpegEncoder.WarmBuildInfo();
             System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.SystemAware);
             System.Windows.Forms.Application.EnableVisualStyles();
