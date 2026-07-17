@@ -32,7 +32,7 @@ internal sealed class IdlePreviewCapture : IDisposable
 
     private readonly object _stateGate = new();
     private Task _lifecycleTail = Task.CompletedTask;
-    private Task<bool> _attachedCleanup = Task.FromResult(true);
+    private Task _attachedCleanup = Task.CompletedTask;
     private CancellationTokenSource? _activeCreation;
     private PreviewResources? _resources;
     private int _generation;
@@ -223,7 +223,7 @@ internal sealed class IdlePreviewCapture : IDisposable
 
     public async Task<IdlePreviewStreamFence?> AcquireStreamStartFenceAsync()
     {
-        Task<bool> cleanup;
+        Task cleanup;
         lock (_stateGate)
         {
             if (_disposed || _streamStartFenced)
@@ -234,11 +234,11 @@ internal sealed class IdlePreviewCapture : IDisposable
             cleanup = QueueAttachedCleanup("stream-start teardown");
         }
 
-        if (!await cleanup.ConfigureAwait(true))
-        {
-            ReleaseStreamStartFence();
-            return null;
-        }
+        // Only an in-flight teardown is worth waiting for. A teardown that
+        // already failed cannot be retried (the capture is as released as it
+        // will get, and WGC tolerates source overlap), so it must not block
+        // every future stream start.
+        await cleanup.ConfigureAwait(true);
 
         lock (_stateGate)
         {
@@ -326,20 +326,20 @@ internal sealed class IdlePreviewCapture : IDisposable
         creationCts.Dispose();
     }
 
-    private Task<bool> QueueAttachedCleanup(string action)
+    private Task QueueAttachedCleanup(string action)
     {
         PreviewResources? resources = _resources;
         _resources = null;
         if (resources is null)
             return _attachedCleanup;
 
-        Task<bool> cleanup = RunCleanupAfterAsync(_lifecycleTail, resources, action);
+        Task cleanup = RunCleanupAfterAsync(_lifecycleTail, resources, action);
         _lifecycleTail = cleanup;
         _attachedCleanup = cleanup;
         return cleanup;
     }
 
-    private static Task<bool> RunCleanupAfterAsync(
+    private static Task RunCleanupAfterAsync(
         Task previousLifecycle,
         PreviewResources resources,
         string action) =>
@@ -349,12 +349,10 @@ internal sealed class IdlePreviewCapture : IDisposable
             {
                 await previousLifecycle.ConfigureAwait(false);
                 resources.Dispose();
-                return true;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[preview] {action} failed: {SingleLine(ex.Message)}");
-                return false;
             }
         });
 
