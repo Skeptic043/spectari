@@ -251,6 +251,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
+        Console.WriteLine("[boot] form constructor enter");
         Text = "StreamHost";
         MinimumSize = new Size(680, 600);
         Size = new Size(760, 690);
@@ -436,10 +437,16 @@ public sealed class MainForm : Form
         VisibleChanged += (_, _) => SyncIdlePreviewVisibility();
         Resize += (_, _) => SyncIdlePreviewVisibility();
 
+        int logUiThreadId = Environment.CurrentManagedThreadId;
         _logHandler = line =>
         {
             if (IsDisposed) return;
-            try { BeginInvoke(() => AppendLog(line)); } catch { }
+            try
+            {
+                if (Environment.CurrentManagedThreadId == logUiThreadId) AppendLogToUi(line);
+                else BeginInvoke(() => AppendLogToUi(line));
+            }
+            catch { }
         };
         ConsoleMirror.LineWritten += _logHandler;
 
@@ -488,13 +495,17 @@ public sealed class MainForm : Form
             _toolTip.Dispose();
         };
 
+        Console.WriteLine("[boot] source enumeration start");
         PopulateSources();
+        Console.WriteLine($"[boot] source enumeration complete: {_windows.Count} windows, {_monitors.Count} monitors");
         LoadSettings();
+        Console.WriteLine("[boot] update check start");
         _ = CheckForUpdatesAsync();
         UpdateLinkBox();
         RefreshSourceOptions();
         SetPreviewLayoutVisible(true);
         StartIdleServer();
+        Console.WriteLine("[boot] form constructor exit");
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -1352,6 +1363,7 @@ public sealed class MainForm : Form
             _idleRetryTimer.Stop();
             _idleBindFailed = false;
             UpdateLinkBox();
+            Console.WriteLine($"[http] holding page listening on port {_portInput.Value}");
         }
         catch (Exception ex)
         {
@@ -2127,11 +2139,20 @@ public sealed class MainForm : Form
 
     private void LoadSettings()
     {
+        Console.WriteLine("[boot] settings load start");
         try
         {
-            if (!File.Exists(SettingsPath)) return;
+            if (!File.Exists(SettingsPath))
+            {
+                Console.WriteLine("[boot] settings load complete: using defaults");
+                return;
+            }
             var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath));
-            if (s is null) return;
+            if (s is null)
+            {
+                Console.WriteLine("[boot] settings load complete: using defaults");
+                return;
+            }
 
             _rbMonitor.Checked = s.SourceKind == "monitor";
             _rbWindow.Checked = !_rbMonitor.Checked;
@@ -2165,8 +2186,12 @@ public sealed class MainForm : Form
             _allowLanCheck.Checked = s.AllowLan;
             _skippedUpdateVersion = UpdateChecker.CanonicalVersion(s.SkipUpdateVersion);
             UpdateAudioModeLabel();
+            Console.WriteLine("[boot] settings load complete");
         }
-        catch { /* corrupted settings are not worth crashing over */ }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[boot] settings load failed: {ex}");
+        }
     }
 
     private void SaveSettings()
@@ -2200,7 +2225,9 @@ public sealed class MainForm : Form
         catch { }
     }
 
-    private void AppendLog(string line)
+    private static void AppendLog(string line) => Console.WriteLine(line);
+
+    private void AppendLogToUi(string line)
     {
         if (_logBox.TextLength > 200_000)
         {
