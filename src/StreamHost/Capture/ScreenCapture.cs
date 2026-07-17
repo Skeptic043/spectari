@@ -130,55 +130,86 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     }
 
     public static ScreenCapture ForMonitor(IntPtr hMonitor) =>
-        new(D3DInterop.CreateItemForMonitor(hMonitor));
+        CreateForTarget("monitor", () => D3DInterop.CreateItemForMonitor(hMonitor));
 
     public static ScreenCapture ForWindow(IntPtr hWnd) =>
-        new(D3DInterop.CreateItemForWindow(hWnd));
+        CreateForTarget("window", () => D3DInterop.CreateItemForWindow(hWnd));
 
-    internal static ScreenCapture ForPreviewMonitor(IntPtr hMonitor) =>
-        new(D3DInterop.CreateItemForMonitor(hMonitor), writeDiagnostics: false);
+    internal static ScreenCapture ForPreviewMonitor(IntPtr hMonitor, CaptureCreationTrace trace) =>
+        CreateForTarget("monitor", () => D3DInterop.CreateItemForMonitor(hMonitor), writeDiagnostics: false, trace);
 
-    internal static ScreenCapture ForPreviewWindow(IntPtr hWnd) =>
-        new(D3DInterop.CreateItemForWindow(hWnd), writeDiagnostics: false);
+    internal static ScreenCapture ForPreviewWindow(IntPtr hWnd, CaptureCreationTrace trace) =>
+        CreateForTarget("window", () => D3DInterop.CreateItemForWindow(hWnd), writeDiagnostics: false, trace);
 
-    private ScreenCapture(GraphicsCaptureItem item, bool writeDiagnostics = true)
+    private static ScreenCapture CreateForTarget(
+        string targetKind,
+        Func<GraphicsCaptureItem> createItem,
+        bool writeDiagnostics = true,
+        CaptureCreationTrace? trace = null)
+    {
+        string itemStep = targetKind == "window"
+            ? "GraphicsCaptureItem.CreateForWindow"
+            : "GraphicsCaptureItem.CreateForMonitor";
+        trace?.Begin(itemStep);
+        GraphicsCaptureItem item = createItem();
+        trace?.Complete(itemStep);
+        return new ScreenCapture(item, writeDiagnostics, trace);
+    }
+
+    private ScreenCapture(GraphicsCaptureItem item, bool writeDiagnostics, CaptureCreationTrace? trace)
     {
         _writeDiagnostics = writeDiagnostics;
+        trace?.Begin("D3D11CreateDevice");
         D3D11.D3D11CreateDevice(
             null, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
             null!, out ID3D11Device? device, out _, out ID3D11DeviceContext? context).CheckError();
+        trace?.Complete("D3D11CreateDevice");
         _device = device!;
         _context = context!;
 
         // The free-threaded WGC frame pool uses this device from its own threads;
         // multithread protection makes the runtime serialize every context call
         // (our _gate only covers OUR calls, not WGC's internal ones).
+        trace?.Begin("ID3D11Multithread.SetMultithreadProtected");
         using (var mt = _context.QueryInterfaceOrNull<ID3D11Multithread>())
             mt?.SetMultithreadProtected(true);
+        trace?.Complete("ID3D11Multithread.SetMultithreadProtected");
 
         // Capture adapter identity for the init log — on hybrid/multi-GPU boxes the
         // capture adapter need not be the render or encoder adapter.
+        trace?.Begin("ID3D11Device.QueryInterface<IDXGIDevice>");
         using (var dxgiDevice = _device.QueryInterface<IDXGIDevice>())
-        using (var adapter = dxgiDevice.GetAdapter())
         {
-            GpuVendorId = (uint)adapter.Description.VendorId;
-            AdapterName = adapter.Description.Description;
-            // Best-effort LUID + UMD driver version — a diagnostics read must never
-            // throw out of the constructor or fail capture.
-            try
+            trace?.Complete("ID3D11Device.QueryInterface<IDXGIDevice>");
+            trace?.Begin("IDXGIDevice.GetAdapter");
+            using (var adapter = dxgiDevice.GetAdapter())
             {
-                using var adapter1 = adapter.QueryInterface<IDXGIAdapter1>();
-                var luid = adapter1.Description1.Luid;
-                AdapterLuid = $"{luid.HighPart}:{luid.LowPart}";
-                if (adapter1.CheckInterfaceSupport(typeof(IDXGIDevice), out long umd))
-                    DriverVersion = $"{(umd >> 48) & 0xFFFF}.{(umd >> 32) & 0xFFFF}.{(umd >> 16) & 0xFFFF}.{umd & 0xFFFF}";
+                trace?.Complete("IDXGIDevice.GetAdapter");
+                trace?.Begin("IDXGIAdapter.Description");
+                GpuVendorId = (uint)adapter.Description.VendorId;
+                AdapterName = adapter.Description.Description;
+                trace?.Complete("IDXGIAdapter.Description");
+                // Best-effort LUID + UMD driver version — a diagnostics read must never
+                // throw out of the constructor or fail capture.
+                trace?.Begin("IDXGIAdapter1 identity queries");
+                try
+                {
+                    using var adapter1 = adapter.QueryInterface<IDXGIAdapter1>();
+                    var luid = adapter1.Description1.Luid;
+                    AdapterLuid = $"{luid.HighPart}:{luid.LowPart}";
+                    if (adapter1.CheckInterfaceSupport(typeof(IDXGIDevice), out long umd))
+                        DriverVersion = $"{(umd >> 48) & 0xFFFF}.{(umd >> 32) & 0xFFFF}.{(umd >> 16) & 0xFFFF}.{umd & 0xFFFF}";
+                }
+                catch { /* diagnostics only — never fail capture over adapter identity */ }
+                trace?.Complete("IDXGIAdapter1 identity queries");
             }
-            catch { /* diagnostics only — never fail capture over adapter identity */ }
         }
         if (_writeDiagnostics)
             Console.WriteLine($"[capture] adapter: {AdapterName}, Windows {Environment.OSVersion.Version}, LUID {AdapterLuid}, driver {DriverVersion}");
 
+        trace?.Begin("CreateDirect3D11DeviceFromDXGIDevice");
         _winrtDevice = D3DInterop.CreateWinRtDevice(_device);
+        trace?.Complete("CreateDirect3D11DeviceFromDXGIDevice");
         _item = item;
         Width = _item.Size.Width & ~1;   // even-aligned for 4:2:0 chroma
         Height = _item.Size.Height & ~1;
@@ -199,15 +230,23 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
             BindFlags = BindFlags.RenderTarget,
             CPUAccessFlags = CpuAccessFlags.None,
         };
+        trace?.Begin("ID3D11Device.CreateTexture2D (output)");
         _latest = _device.CreateTexture2D(desc);
+        trace?.Complete("ID3D11Device.CreateTexture2D (output)");
+        trace?.Begin("ID3D11Device.CreateRenderTargetView");
         _latestRtv = _device.CreateRenderTargetView(_latest, null);
+        trace?.Complete("ID3D11Device.CreateRenderTargetView");
 
         // Staging textures are CPU-readback only and can't carry a bind flag.
         desc.Usage = ResourceUsage.Staging;
         desc.BindFlags = BindFlags.None;
         desc.CPUAccessFlags = CpuAccessFlags.Read;
+        trace?.Begin("ID3D11Device.CreateTexture2D (staging A)");
         _stagingA = _device.CreateTexture2D(desc);
+        trace?.Complete("ID3D11Device.CreateTexture2D (staging A)");
+        trace?.Begin("ID3D11Device.CreateTexture2D (staging B)");
         _stagingB = _device.CreateTexture2D(desc);
+        trace?.Complete("ID3D11Device.CreateTexture2D (staging B)");
 
         // A closed window/monitor ends the capture permanently — surface it as a
         // clean session stop instead of a silent freeze-frame.
@@ -217,13 +256,19 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
             try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
         };
 
+        trace?.Begin("Direct3D11CaptureFramePool.CreateFreeThreaded");
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
             _winrtDevice, CaptureFormat, CaptureBufferCount, _item.Size);
+        trace?.Complete("Direct3D11CaptureFramePool.CreateFreeThreaded");
         _framePool.FrameArrived += OnFrameArrived;
+        trace?.Begin("Direct3D11CaptureFramePool.CreateCaptureSession");
         _session = _framePool.CreateCaptureSession(_item);
+        trace?.Complete("Direct3D11CaptureFramePool.CreateCaptureSession");
         _session.IsCursorCaptureEnabled = true;
         try { _session.IsBorderRequired = false; } catch { /* needs consent API; yellow border is fine */ }
+        trace?.Begin("GraphicsCaptureSession.StartCapture");
         _session.StartCapture();
+        trace?.Complete("GraphicsCaptureSession.StartCapture");
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
@@ -620,15 +665,11 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
 
     public void Dispose()
     {
-        // Stop the frame source BEFORE disposing anything a late callback could
-        // touch — the signal was previously disposed first, letting an in-flight
-        // OnFrameArrived crash on a dead AutoResetEvent.
-        lock (_gate)
-            _disposing = true;
+        // Stop new callbacks before waiting for an in-flight callback's GPU gate.
+        _disposing = true;
         _framePool.FrameArrived -= OnFrameArrived;
         _session.Dispose();
         _framePool.Dispose();
-        _frameSignal.Dispose();
         lock (_gate)
         {
             _scaleSourceView?.Dispose();
@@ -643,5 +684,6 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
             _context.Dispose();
             _device.Dispose();
         }
+        _frameSignal.Dispose();
     }
 }
