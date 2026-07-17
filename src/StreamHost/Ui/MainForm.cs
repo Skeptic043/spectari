@@ -234,7 +234,7 @@ public sealed class MainForm : Form
     // keep retrying the holding page instead of giving up for the whole run.
     private readonly System.Windows.Forms.Timer _idleRetryTimer = new() { Interval = 15000 };
     private bool _idleBindFailed;
-    private IdlePreviewCapture? _idlePreviewCapture;
+    private readonly IdlePreviewCapture _idlePreviewCapture = new();
     private IntPtr _previewWaitingWindow;
     private bool _previewPausedForForm = true;
     private bool _closing;
@@ -402,13 +402,13 @@ public sealed class MainForm : Form
         {
             if (_bitrateCombo.SelectedItem is BitrateChoice bc) _savedBitrateTier = bc.Tier;
         };
-        _startButton.Click += (_, _) =>
+        _startButton.Click += async (_, _) =>
         {
             // Clicking during a scheduled CPU retry cancels the retry.
             // Cancelling a scheduled CPU retry: the GPU run got far enough to
             // schedule a fallback, so treat its key as used and rotate it.
             if (_pendingCpuRetry) { CancelCpuRetry(); OnSessionStopped(null, wentLive: true); return; }
-            if (_session is null) StartStream(); else StopStream();
+            if (_session is null) await StartStreamAsync(); else StopStream();
         };
         _switchButton.Click += (_, _) => ShowSwitchDialog();
         _copyButton.Click += (_, _) => CopyLink(BuildUrl(""));
@@ -465,6 +465,7 @@ public sealed class MainForm : Form
             SaveSettings();
             _statsTimer.Stop();
             StopIdlePreview(hideLayout: true);
+            _idlePreviewCapture.Dispose();
             // Detach the session before stopping it: Stop() joins the session
             // thread, whose Stopped callback posts back here via BeginInvoke. With
             // _session nulled, that callback's ReferenceEquals(_session, session)
@@ -596,7 +597,7 @@ public sealed class MainForm : Form
         _previewDebounceTimer.Start();
     }
 
-    private void StartIdlePreview()
+    private async void StartIdlePreview()
     {
         _previewDebounceTimer.Stop();
         if (!CanRunIdlePreview) return;
@@ -604,6 +605,7 @@ public sealed class MainForm : Form
         StopIdlePreview(placeholder: "Waiting for preview...");
         SetPreviewLayoutVisible(true);
 
+        IdlePreviewStartState startState;
         try
         {
             if (_rbWindow.Checked)
@@ -630,7 +632,7 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                _idlePreviewCapture = IdlePreviewCapture.ForWindow(handle);
+                startState = await _idlePreviewCapture.StartForWindowAsync(handle);
             }
             else
             {
@@ -641,14 +643,28 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                _idlePreviewCapture = IdlePreviewCapture.ForMonitor(_monitors[index].Handle);
+                startState = await _idlePreviewCapture.StartForMonitorAsync(_monitors[index].Handle);
+            }
+
+            if (startState == IdlePreviewStartState.Canceled) return;
+            if (startState is IdlePreviewStartState.TimedOut or IdlePreviewStartState.Failed)
+            {
+                SetPreviewPlaceholder("Preview unavailable.");
+                return;
+            }
+
+            if (!CanRunIdlePreview)
+            {
+                _idlePreviewCapture.Stop();
+                return;
             }
 
             _previewPollTimer.Start();
             PollIdlePreview();
         }
-        catch
+        catch (Exception ex)
         {
+            Console.WriteLine($"[preview] start failed: {ex.Message.Replace('\r', ' ').Replace('\n', ' ')}");
             StopIdlePreview(placeholder: "Preview unavailable.");
         }
     }
@@ -661,7 +677,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        if (_idlePreviewCapture is null)
+        if (!_idlePreviewCapture.IsReady)
         {
             if (_previewWaitingWindow == IntPtr.Zero) return;
             if (!IsWindow(_previewWaitingWindow))
@@ -678,11 +694,11 @@ public sealed class MainForm : Form
             return;
         }
 
-        IdlePreviewCapture capture = _idlePreviewCapture;
         IdlePreviewPollResult result;
-        try { result = capture.Poll(); }
-        catch
+        try { result = _idlePreviewCapture.Poll(); }
+        catch (Exception ex)
         {
+            Console.WriteLine($"[preview] frame poll failed: {ex.Message.Replace('\r', ' ').Replace('\n', ' ')}");
             result = new IdlePreviewPollResult(IdlePreviewPollState.Unavailable);
         }
 
@@ -695,9 +711,8 @@ public sealed class MainForm : Form
                 SetPreviewPlaceholder("Window is minimized.");
                 break;
             case IdlePreviewPollState.Unavailable:
-                _idlePreviewCapture = null;
                 _previewPollTimer.Stop();
-                try { capture.Dispose(); } catch { }
+                _idlePreviewCapture.Stop();
                 SetPreviewPlaceholder("Source is closed or unavailable.");
                 break;
         }
@@ -735,9 +750,7 @@ public sealed class MainForm : Form
         _previewPollTimer.Stop();
         _previewWaitingWindow = IntPtr.Zero;
 
-        IdlePreviewCapture? capture = _idlePreviewCapture;
-        _idlePreviewCapture = null;
-        try { capture?.Dispose(); } catch { }
+        _idlePreviewCapture.Stop();
         SetPreviewPlaceholder(placeholder);
         if (hideLayout) SetPreviewLayoutVisible(false);
     }
@@ -854,7 +867,7 @@ public sealed class MainForm : Form
         _audioCombo.SelectedIndex = idx >= 0 ? idx + 2 : 1;
     }
 
-    private void StartStream()
+    private async Task StartStreamAsync()
     {
         // Reuse the pending key so links copied while idle (they carry ?k=this)
         // stay valid the moment the stream goes live. Rotated after a live stop.
@@ -870,7 +883,7 @@ public sealed class MainForm : Form
 
         _retriedCpu = false;
         SaveSettings();
-        LaunchSession(config);
+        await LaunchSessionAsync(config);
     }
 
     /// <summary>Reads the whole UI into a SessionConfig, or null (with a log line)
@@ -937,12 +950,19 @@ public sealed class MainForm : Form
 
     /// <summary>Starts a session and wires its Stopped event, including the automatic
     /// CPU-encoder retry when the live video pipeline stalls. Returns false if it couldn't start.</summary>
-    private bool LaunchSession(SessionConfig config)
+    private async Task<bool> LaunchSessionAsync(SessionConfig config)
     {
-        // A preview and a real session must never own the same source together.
-        // This is synchronous: WGC is fully disposed before StreamSession can
-        // create its capture on the session thread.
-        StopIdlePreview(hideLayout: true);
+        _previewDebounceTimer.Stop();
+        _previewPollTimer.Stop();
+        _previewWaitingWindow = IntPtr.Zero;
+        SetPreviewPlaceholder("Preview available while idle.");
+        SetPreviewLayoutVisible(false);
+
+        // Block preview attachment until _session is assigned.
+        IdlePreviewCapture.IdlePreviewStreamFence? previewFence =
+            await _idlePreviewCapture.AcquireStreamStartFenceAsync();
+        if (previewFence is null) return false;
+
         StopIdleServer(); // hand the port to the session
         StreamSession session;
         try
@@ -954,6 +974,7 @@ public sealed class MainForm : Form
             AppendLog($"Failed to start: {ex.Message}");
             _session = null;
             StartIdleServer();
+            previewFence.Dispose();
             ResumeIdlePreview();
             return false;
         }
@@ -965,7 +986,7 @@ public sealed class MainForm : Form
         {
             try
             {
-                BeginInvoke(() =>
+                BeginInvoke(async () =>
                 {
                     if (!ReferenceEquals(_session, session)) return; // superseded by a newer session
                     _session = null;
@@ -977,7 +998,7 @@ public sealed class MainForm : Form
                     if (_pendingSwitch is { } next)
                     {
                         _pendingSwitch = null;
-                        LaunchSession(next);
+                        await LaunchSessionAsync(next);
                         return;
                     }
 
@@ -1006,7 +1027,7 @@ public sealed class MainForm : Form
                         _cpuRetryTimer?.Dispose(); // never expected here, but never leak one either
                         var timer = new System.Windows.Forms.Timer { Interval = 250 };
                         _cpuRetryTimer = timer;
-                        timer.Tick += (_, _) =>
+                        timer.Tick += async (_, _) =>
                         {
                             // Operate on the captured instance, never the shared field: a
                             // stale tick must not stop/dispose a newer timer that a later
@@ -1020,7 +1041,7 @@ public sealed class MainForm : Form
                             // may have moved on. The generation catches the latter even when
                             // _pendingCpuRetry has been re-armed by a new cycle.
                             if (IsDisposed || gen != _lifecycleGen) return;
-                            if (_pendingCpuRetry) { _pendingCpuRetry = false; LaunchSession(fallback); }
+                            if (_pendingCpuRetry) { _pendingCpuRetry = false; await LaunchSessionAsync(fallback); }
                         };
                         timer.Start();
                         return;
@@ -1032,6 +1053,7 @@ public sealed class MainForm : Form
         };
         _session = session;
         _lastConfig = config;
+        previewFence.Dispose();
         session.Start();
 
         _livePort = config.Port;
@@ -1299,9 +1321,9 @@ public sealed class MainForm : Form
     /// <summary>Restart with whatever the UI currently selects, keeping the port
     /// and viewer key, so viewer links survive and pages auto-reconnect after a
     /// short blip. Under the hood it is a clean stop + start.</summary>
-    private void SwitchSource()
+    private async void SwitchSource()
     {
-        if (_session is null) { StartStream(); return; }
+        if (_session is null) { await StartStreamAsync(); return; }
         if (_stopping) return;
         var config = BuildConfigFromUi(_livePort, _session.ViewKey);
         if (config is null) return;
