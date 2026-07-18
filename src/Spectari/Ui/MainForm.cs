@@ -254,7 +254,7 @@ public sealed class MainForm : Form
         Console.WriteLine("[boot] form constructor enter");
         Text = "Spectari";
         MinimumSize = new Size(680, 600);
-        Size = new Size(760, 690);
+        Size = new Size(840, 690);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Bg;
         ForeColor = Fg;
