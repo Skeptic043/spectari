@@ -1,7 +1,5 @@
 using System.Diagnostics;
 using System.IO.Pipes;
-using System.Net;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using Spectari.Capture;
 using Spectari.Encode;
@@ -322,21 +320,20 @@ public sealed class StreamSession
         WentLive = true;
         // Console users have no other way to get the link, so the key is printed
         // (and therefore lands in the log file) - the support bundle strips it.
-        string keySuffix = _config.ViewKey is null ? "" : $"?k={_config.ViewKey}";
         Console.WriteLine($"[ready] first frame captured; streaming {Description} via {encoder}");
-        Console.WriteLine($"[ready] watch at: http://localhost:{_config.Port}/{keySuffix}");
+        Console.WriteLine($"[ready] watch at: {ShareLinkResolver.BuildViewerUrl("localhost", _config.Port, "", _config.ViewKey)}");
         // Tailscale addresses are in scope in every firewall config, so they are
         // always live. LAN addresses only work if LAN access was actually opened;
         // console mode has no persisted scope, so the honest form is a caveat.
-        var shareAddrs = GetShareAddresses();
-        foreach (var ip in shareAddrs.Where(IsTailscaleAddress))
-            Console.WriteLine($"[ready]           http://{ip}:{_config.Port}/{keySuffix}");
-        var lanAddrs = shareAddrs.Where(ip => !IsTailscaleAddress(ip)).ToList();
+        var shareAddrs = ShareLinkResolver.GetShareAddresses();
+        foreach (var ip in shareAddrs.Where(ShareLinkResolver.IsTailscaleAddress))
+            Console.WriteLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
+        var lanAddrs = shareAddrs.Where(ip => !ShareLinkResolver.IsTailscaleAddress(ip)).ToList();
         if (lanAddrs.Count > 0)
         {
             Console.WriteLine($"[ready] the LAN links below only work if you allowed LAN access (setup.bat or Open port with Allow LAN):");
             foreach (var ip in lanAddrs)
-                Console.WriteLine($"[ready]           http://{ip}:{_config.Port}/{keySuffix}");
+                Console.WriteLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
         }
 
         // Independent output watchdog. It runs for the whole session because a
@@ -721,90 +718,4 @@ public sealed class StreamSession
         });
     }
 
-    /// <summary>True iff <paramref name="ip"/> is a Tailscale CGNAT address
-    /// (100.64.0.0/10): a dotted quad whose first octet is 100 and second octet
-    /// 64..127. These are in scope in every firewall config, so a Tailscale
-    /// address is always safe to advertise.</summary>
-    public static bool IsTailscaleAddress(string ip)
-    {
-        string[] parts = ip.Split('.');
-        return parts.Length == 4
-            && byte.TryParse(parts[0], out byte a) && a == 100
-            && byte.TryParse(parts[1], out byte b) && b >= 64 && b <= 127
-            && byte.TryParse(parts[2], out _)
-            && byte.TryParse(parts[3], out _);
-    }
-
-    /// <summary>Shareable IPv4s, best first. Ranks by the owning adapter, not just
-    /// the address range: an active Tailscale interface wins, then physical private
-    /// LAN adapters with a default route. Hyper-V/WSL/Docker/VM adapters and
-    /// link-local addresses are excluded entirely - copying one of those produced
-    /// links that worked for the streamer and nobody else. When
-    /// <paramref name="includeLan"/> is false, only Tailscale addresses are
-    /// returned (LAN links aren't reachable unless LAN access was applied).</summary>
-    public static List<string> GetShareAddresses(bool includeLan = true)
-    {
-        var ranked = new List<(int Rank, string Addr)>();
-        try
-        {
-            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
-            {
-                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
-                if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
-
-                string label = $"{nic.Name} {nic.Description}";
-                bool isTailscale = label.Contains("Tailscale", StringComparison.OrdinalIgnoreCase);
-                bool isVirtual =
-                    label.Contains("Hyper-V", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("vEthernet", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("WSL", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("Docker", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("VirtualBox", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("VMware", StringComparison.OrdinalIgnoreCase) ||
-                    label.Contains("Loopback", StringComparison.OrdinalIgnoreCase);
-
-                var props = nic.GetIPProperties();
-                bool hasGateway = props.GatewayAddresses
-                    .Any(g => g.Address.AddressFamily == AddressFamily.InterNetwork);
-
-                foreach (var ua in props.UnicastAddresses)
-                {
-                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork) continue;
-                    byte[] b = ua.Address.GetAddressBytes();
-                    if (b[0] == 169 && b[1] == 254) continue; // link-local
-                    bool cgnat = b[0] == 100 && b[1] >= 64 && b[1] <= 127; // Tailscale range
-                    bool privateRange = b[0] == 10 || (b[0] == 192 && b[1] == 168) ||
-                                        (b[0] == 172 && b[1] >= 16 && b[1] <= 31);
-
-                    // Only ranges viewers can actually reach: the firewall rule
-                    // admits Tailscale + private LAN, so a Radmin-VPN-style 26.x
-                    // or public address would be a dead link.
-                    if (!cgnat && !privateRange) continue;
-                    if (isVirtual && !isTailscale && !cgnat) continue;
-                    int rank = isTailscale || cgnat ? 0
-                             : hasGateway ? 1
-                             : 2;
-                    ranked.Add((rank, ua.Address.ToString()));
-                }
-            }
-        }
-        catch { }
-
-        if (ranked.Count > 0)
-        {
-            var result = ranked.OrderBy(r => r.Rank).Select(r => r.Addr).Distinct().ToList();
-            return includeLan ? result : result.Where(IsTailscaleAddress).ToList();
-        }
-
-        // Fallback: the old DNS-based list, better than handing out nothing.
-        try
-        {
-            var result = Dns.GetHostAddresses(Dns.GetHostName())
-                .Where(a => a.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(a))
-                .Select(a => a.ToString())
-                .ToList();
-            return includeLan ? result : result.Where(IsTailscaleAddress).ToList();
-        }
-        catch { return []; }
-    }
 }
