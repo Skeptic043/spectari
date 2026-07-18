@@ -13,8 +13,7 @@ public sealed record DiscoveredStream(string PeerName, string Url, string Stream
 /// </summary>
 public static class StreamDiscovery
 {
-    private static readonly string RememberedPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "peers.json");
+    private static readonly string RememberedPath = AppPaths.PeersFile;
 
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
 

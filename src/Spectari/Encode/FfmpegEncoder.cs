@@ -143,8 +143,7 @@ public sealed class FfmpegEncoder : IDisposable
     /// <summary>Single source of truth for the positive-probe cache file
     /// (%AppData%/StreamHost/encoder.cache), shared by PickEncoder and
     /// InvalidateProbeCache so the path is never spelled out in two places.</summary>
-    private static string CachePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "encoder.cache");
+    private static string CachePath => Spectari.Util.AppPaths.EncoderCacheFile;
 
     /// <summary>Drops the cached "passed" verdict so the next auto-mode launch
     /// re-probes the GPU encoder instead of trusting a token a live stall just
