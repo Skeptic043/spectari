@@ -174,19 +174,13 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _previewPollTimer = new() { Interval = 500 };
 
     private readonly SourceSelectionModel _sourceSelection = new();
+    private readonly HostAccessService _hostAccess;
+    private readonly ShareLinkResolver _shareLinks;
     private readonly StreamController _streamController;
     private WatchForm? _watchForm;
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
     private bool _refreshingSourceOptions; // suppresses preset events caused by Native relabeling
-    // Persisted "LAN access was actually applied" flag: set only on a successful
-    // Open port with Allow LAN checked, never on a mere checkbox toggle. Gates
-    // whether LAN addresses are treated as reachable for links and status.
-    private bool _allowLanApplied;
-    // The port last configured by Open port. LAN gating is per-port (LanAppliedForPort):
-    // _allowLanApplied alone let an edit to the port field advertise LAN on a port
-    // that was never opened, since the helper had configured a different live port.
-    private int _allowLanPort;
 
     // The viewer key for the NEXT stream, minted up front so a link copied while
     // idle already carries ?k=. Reused when the stream starts and rotated only
@@ -235,7 +229,6 @@ public sealed class MainForm : Form
     // lambda would root every dead form forever and fan each log line out to all
     // of them.
     private Action<string>? _logHandler;
-    private bool _fixingPort; // guards the elevated Open port helper against re-entry
     private readonly CancellationTokenSource _updateCheckCts = new();
     private string? _availableUpdateVersion;
     private string? _skippedUpdateVersion;
@@ -378,6 +371,17 @@ public sealed class MainForm : Form
         _linkBox.BackColor = Card;
         _linkBox.ForeColor = Dim;
 
+        _hostAccess = new HostAccessService(
+            action =>
+            {
+                if (_closing || IsDisposed || Disposing) return;
+                BeginInvoke(action);
+            },
+            AppendLog);
+        _shareLinks = new ShareLinkResolver(_hostAccess);
+        _hostAccess.SetupStarted += _ => SetHostAccessControlsEnabled(false);
+        _hostAccess.SetupCompleted += RenderHostAccessSetupResult;
+
         _streamController = new StreamController(new StreamControllerHooks(
             AcquireStreamStartFenceAsync,
             StopIdleServer,
@@ -431,7 +435,8 @@ public sealed class MainForm : Form
                 await StartStreamAsync();
         };
         _switchButton.Click += (_, _) => ShowSwitchDialog();
-        _copyButton.Click += (_, _) => CopyLink(BuildUrl(""));
+        _copyButton.Click += (_, _) => CopyLink(
+            _shareLinks.ResolvePrimaryUrl(CurrentShareLinkContext(), ""));
         var copyMenu = new ContextMenuStrip
         {
             BackColor = Card,
@@ -1413,31 +1418,24 @@ public sealed class MainForm : Form
             return;
         }
         _streamController.MarkLive();
-        if (session!.LocalOnly)
+        ShareReachability reachability = _shareLinks.ResolveReachability(
+            _livePort,
+            session!.LocalOnly);
+        if (reachability == ShareReachability.LocalOnly)
         {
             _statusLabel.ForeColor = Color.Goldenrod;
             _statusLabel.Text = $"LIVE, THIS PC ONLY: click Open port in Misc to let viewers reach port {_livePort}";
         }
+        else if (reachability is ShareReachability.Tailscale or ShareReachability.Lan)
+        {
+            _statusLabel.ForeColor = Green;
+            string lanTag = reachability == ShareReachability.Lan ? " (LAN)" : "";
+            _statusLabel.Text = $"LIVE{lanTag} · {session.Description} · {EncoderLabel(session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
+        }
         else
         {
-            // A Tailscale address is always reachable (99% path). Otherwise LAN
-            // is reachable only if LAN access was actually applied. With neither,
-            // the stream is up but nobody can reach it - warn instead of green.
-            var addrs = StreamSession.GetShareAddresses(includeLan: true);
-            bool tailscaleReachable = addrs.Any(StreamSession.IsTailscaleAddress);
-            bool lanReachable = !tailscaleReachable && LanAppliedForPort(_livePort)
-                && addrs.Any(a => !StreamSession.IsTailscaleAddress(a));
-            if (tailscaleReachable || lanReachable)
-            {
-                _statusLabel.ForeColor = Green;
-                string lanTag = tailscaleReachable ? "" : " (LAN)";
-                _statusLabel.Text = $"LIVE{lanTag} · {session.Description} · {EncoderLabel(session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
-            }
-            else
-            {
-                _statusLabel.ForeColor = Color.Goldenrod;
-                _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or check Allow LAN and click Open port in Misc.";
-            }
+            _statusLabel.ForeColor = Color.Goldenrod;
+            _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or check Allow LAN and click Open port in Misc.";
         }
         Text = $"Spectari - LIVE ({b.ViewerCount} watching)";
     }
@@ -1453,76 +1451,36 @@ public sealed class MainForm : Form
         _ => encoder,
     };
 
-    /// <summary>LAN is reachable for a port only when Open port with Allow LAN
-    /// succeeded for THAT port. Guards against advertising LAN on a port the helper
-    /// never opened (e.g. the field was edited to a new port after the fix).</summary>
-    private bool LanAppliedForPort(int port) => _allowLanApplied && port == _allowLanPort;
-
-    private int LinkPort() => _livePort > 0 ? _livePort : (int)_portInput.Value;
-
-    private bool ActiveServerIsLocalOnly() =>
-        _streamController.CurrentSession is { } live ? live.LocalOnly : _idleServer?.LocalOnly == true;
-
-    private string? LanShareAddressForPort(int port) =>
-        LanAppliedForPort(port)
-            ? StreamSession.GetShareAddresses(includeLan: true)
-                .FirstOrDefault(a => !StreamSession.IsTailscaleAddress(a))
-            : null;
-
-    private string BuildViewerUrl(string host, int port, string pathSuffix)
+    private ShareLinkContext CurrentShareLinkContext()
     {
-        string url = $"http://{host}:{port}/{pathSuffix}";
-        // While streaming, the live session's key; while idle, the pending key the
-        // next stream will accept, so a link copied now already carries ?k= and a
-        // tab opened early self-connects when the stream starts.
-        if (pathSuffix.Length == 0 && (_streamController.CurrentSession?.ViewKey ?? _pendingKey) is { } key)
-            url += $"?k={key}";
-        return url;
+        StreamSession? live = _streamController.CurrentSession;
+        return new ShareLinkContext(
+            (int)_portInput.Value,
+            _livePort,
+            live is not null,
+            live?.LocalOnly == true,
+            _idleServer?.LocalOnly == true,
+            live?.ViewKey,
+            _pendingKey);
     }
 
-    private string BuildUrl(string pathSuffix)
-    {
-        // Never hand out a network address the server can't actually answer on.
-        // Prefer a Tailscale address (in scope in every firewall config); fall
-        // back to a LAN address only if LAN access was actually applied; else
-        // localhost. LocalOnly (no URL ACL) forces localhost regardless: honor the
-        // live session while streaming, else the holding page's own bind so an
-        // idle localhost-only fallback isn't advertised as a network address.
-        // Port in play: the live session's while streaming, else the box the link uses.
-        int port = LinkPort();
-        string host;
-        if (ActiveServerIsLocalOnly())
-            host = "localhost";
-        else
-        {
-            var tailscale = StreamSession.GetShareAddresses(includeLan: false);
-            if (tailscale.Count > 0)
-                host = tailscale[0];
-            else if (LanShareAddressForPort(port) is { } lan)
-                host = lan;
-            else
-                host = "localhost";
-        }
-        return BuildViewerUrl(host, port, pathSuffix);
-    }
-
-    private void UpdateLinkBox() => _linkBox.Text = BuildUrl("");
+    private void UpdateLinkBox() => _linkBox.Text =
+        _shareLinks.ResolvePrimaryUrl(CurrentShareLinkContext(), "");
 
     private void CopyLanLink()
     {
-        int port = LinkPort();
-        var lan = StreamSession.GetShareAddresses(includeLan: true)
-            .FirstOrDefault(a => !StreamSession.IsTailscaleAddress(a));
-        if (lan is null)
+        LanLinkResolution resolution = _shareLinks.ResolveLanLink(CurrentShareLinkContext());
+        if (resolution.Warning == LanLinkWarning.NoLanAddress)
         {
             AppendLog("LAN link unavailable: no LAN address was found for this PC.");
             return;
         }
-        CopyLink(BuildViewerUrl(lan, port, ""));
-        if (ActiveServerIsLocalOnly())
-            AppendLog($"Warning: the server is bound to localhost only. This LAN link cannot work until Open port succeeds for port {port}.");
-        else if (!LanAppliedForPort(port))
-            AppendLog($"Warning: Spectari has no record of LAN access being opened for port {port}. This link may not load on other devices; if it does not, check Allow LAN and click Open port.");
+
+        CopyLink(resolution.Url!);
+        if (resolution.Warning == LanLinkWarning.ServerLocalOnly)
+            AppendLog($"Warning: the server is bound to localhost only. This LAN link cannot work until Open port succeeds for port {resolution.Port}.");
+        else if (resolution.Warning == LanLinkWarning.AccessNotConfirmed)
+            AppendLog($"Warning: Spectari has no record of LAN access being opened for port {resolution.Port}. This link may not load on other devices; if it does not, check Allow LAN and click Open port.");
     }
 
     private void OpenWatchWindow()
@@ -1534,9 +1492,8 @@ public sealed class MainForm : Form
             _watchForm.Activate();
             return;
         }
-        // While live, scan the port actually bound (the box stays editable and can
-        // drift from it); otherwise the input value. Same rule as the viewer link.
-        _watchForm = new WatchForm(_livePort > 0 ? _livePort : (int)_portInput.Value);
+        int port = ShareLinkResolver.ResolveActiveTarget(CurrentShareLinkContext()).Port;
+        _watchForm = new WatchForm(port);
         AppRunContext.Current?.Track(_watchForm); // count it toward app lifetime
         _watchForm.Show();
     }
@@ -1563,27 +1520,15 @@ public sealed class MainForm : Form
     /// the stream so the new binding takes effect. One UAC prompt, no file hunting.</summary>
     private void FixPortAccess()
     {
-        // Clicking again while the elevated helper is still running would spawn a
-        // second UAC prompt and helper on the same URL reservation. Ignore
-        // re-entry until this one has actually exited (see the wait below).
-        if (_fixingPort) return;
-        int port = _livePort > 0 ? _livePort : (int)_portInput.Value;
-
-        // Don't blow away another app's URL reservation without asking. Reading
-        // the reservation needs no admin, so we check here on the UI thread
-        // before the UAC relaunch. Ours (or none) proceeds silently.
-        string me = $"{Environment.UserDomainName}\\{Environment.UserName}";
-        string? owner = Util.PortSetup.ReadReservationOwner(port);
-        if (owner is not null && !owner.Equals(me, StringComparison.OrdinalIgnoreCase))
+        int port = ShareLinkResolver.ResolveActiveTarget(CurrentShareLinkContext()).Port;
+        HostReservationReview reservation = _hostAccess.ReviewReservation(port);
+        if (reservation.Status != HostReservationStatus.AvailableOrOwned)
         {
-            // The sentinel means the reservation exists but its owner couldn't be
-            // read (or even probed): word the prompt for that instead of splicing
-            // the sentinel into "reserved by another account: <owner>".
-            string body = owner == Util.PortSetup.UnknownOwner
+            string body = reservation.Status == HostReservationStatus.UnknownOwner
                 ? $"Port {port} is already reserved, but Spectari could not read which account owns it.\n\n" +
                   "Replacing that reservation may break the app that created it. " +
                   "Reserve this port for Spectari anyway?"
-                : $"Port {port} is already reserved by another account:\n\n{owner}\n\n" +
+                : $"Port {port} is already reserved by another account:\n\n{reservation.Owner}\n\n" +
                   "Replacing that reservation may break the app that created it. " +
                   "Reserve this port for Spectari anyway?";
             var choice = MessageBox.Show(this, body,
@@ -1595,100 +1540,44 @@ public sealed class MainForm : Form
             }
         }
 
-        // Snapshot the requested scope BEFORE launching. The helper can run for
-        // many seconds; if the user toggles Allow LAN meanwhile, we must persist
-        // what was actually applied, not the later checkbox state.
-        bool requestedAllowLan = _allowLanCheck.Checked;
+        _hostAccess.TryConfigure(port, _allowLanCheck.Checked, Application.ExecutablePath);
+    }
 
-        AppendLog($"Asking for administrator approval to configure port {port}…");
-        string arguments = $"--setup-port {port} --setup-user \"{me}\"";
-        if (requestedAllowLan) arguments += " --setup-lan";
-        var psi = new System.Diagnostics.ProcessStartInfo(Application.ExecutablePath, arguments)
+    private void SetHostAccessControlsEnabled(bool enabled)
+    {
+        _allowLanCheck.Enabled = enabled;
+        _portInput.Enabled = enabled;
+        _fixPortButton.Enabled = enabled;
+    }
+
+    private void RenderHostAccessSetupResult(HostAccessSetupResult result)
+    {
+        SetHostAccessControlsEnabled(true);
+        if (result.Outcome == HostAccessSetupOutcome.Succeeded)
         {
-            UseShellExecute = true,
-            Verb = "runas",
-        };
-        _fixingPort = true; // cleared only when the helper actually exits
-        // Freeze the scope inputs while a fix is in flight so nothing changes out
-        // from under the snapshot above.
-        _allowLanCheck.Enabled = false;
-        _portInput.Enabled = false;
-        _fixPortButton.Enabled = false;
-        new Thread(() =>
+            SaveSettings();
+            AppendLog($"Port {result.Request.Port} configured.");
+            if (_streamController.CurrentSession is not null
+                && _streamController.LastConfig is { } lastConfig
+                && !_streamController.IsStopping)
+            {
+                AppendLog("Restarting the stream so the new access takes effect…");
+                _streamController.Switch(lastConfig, StreamController.AccessRestartTrigger);
+            }
+            else if (_streamController.CurrentSession is null)
+            {
+                RestartIdleServer();
+                UpdateLinkBox();
+            }
+        }
+        else if (result.Outcome == HostAccessSetupOutcome.ApprovalDeclined)
         {
-            int code;
-            try
-            {
-                using var p = System.Diagnostics.Process.Start(psi);
-                if (p is null) code = -1;
-                else
-                {
-                    // The helper's work (two urlacl reads plus several netsh calls
-                    // and a possible rollback) can outrun this wait. The helper is
-                    // ELEVATED and this UI is not, so we cannot kill it (Process.Kill
-                    // throws Access Denied across the elevation boundary). Giving up
-                    // and clearing the guard here would let a re-click run a SECOND
-                    // helper on the same URL reservation, so instead we keep waiting
-                    // for the real exit and just tell the user it is still going.
-                    if (!p.WaitForExit(60000))
-                    {
-                        try { BeginInvoke(() => AppendLog("Still configuring the port. Waiting for the administrator step to finish…")); }
-                        catch { }
-                        p.WaitForExit(); // unbounded: only a real exit clears the guard
-                    }
-                    code = p.ExitCode;
-                }
-            }
-            catch (System.ComponentModel.Win32Exception) // UAC declined
-            {
-                code = -2;
-            }
-            catch
-            {
-                code = -1;
-            }
-            try
-            {
-                BeginInvoke(() =>
-                {
-                    _fixingPort = false;
-                    _allowLanCheck.Enabled = true;
-                    _portInput.Enabled = true;
-                    _fixPortButton.Enabled = true;
-                    if (code == 0)
-                    {
-                        // Record the scope that was actually applied - the pre-launch
-                        // snapshot, never the live checkbox, and only on success. Bind it
-                        // to the exact port the helper configured (the snapshot `port`, not
-                        // the current box), so a later port edit can't inherit this LAN grant.
-                        // On a success with Allow LAN unchecked, applied stays false but the
-                        // port is still recorded (the helper configured it Tailscale-only).
-                        _allowLanApplied = requestedAllowLan;
-                        _allowLanPort = port;
-                        SaveSettings();
-                        AppendLog($"Port {port} configured.");
-                        if (_streamController.CurrentSession is not null
-                            && _streamController.LastConfig is { } lastConfig
-                            && !_streamController.IsStopping)
-                        {
-                            AppendLog("Restarting the stream so the new access takes effect…");
-                            _streamController.Switch(lastConfig, StreamController.AccessRestartTrigger);
-                        }
-                        else if (_streamController.CurrentSession is null)
-                        {
-                            RestartIdleServer();
-                            UpdateLinkBox();
-                        }
-                    }
-                    else if (code == -2)
-                        AppendLog("Administrator approval was declined; viewers on other machines stay blocked.");
-                    else
-                        AppendLog($"Port setup failed (code {code}). Fallback: run setup.bat {port} as administrator.");
-                });
-            }
-            catch { _fixingPort = false; } // form gone before we could report back - release the guard
-        })
-        { IsBackground = true, Name = "fix-port" }.Start();
+            AppendLog("Administrator approval was declined; viewers on other machines stay blocked.");
+        }
+        else
+        {
+            AppendLog($"Port setup failed (code {result.ExitCode}). Fallback: run setup.bat {result.Request.Port} as administrator.");
+        }
     }
 
     /// <summary>Everything needed to debug a report, one clipboard copy:
@@ -2006,8 +1895,7 @@ public sealed class MainForm : Form
                 }
             }
             _encoderCombo.SelectedIndex = encIdx >= 0 ? encIdx : 0;
-            _allowLanApplied = s.AllowLan;
-            _allowLanPort = s.AllowLanPort;
+            _hostAccess.RestorePersistedState(s.AllowLan, s.AllowLanPort);
             _allowLanCheck.Checked = s.AllowLan;
             _skippedUpdateVersion = UpdateChecker.CanonicalVersion(s.SkipUpdateVersion);
             Console.WriteLine("[boot] settings load complete");
@@ -2023,6 +1911,7 @@ public sealed class MainForm : Form
         using IDisposable? operation = _uiHangWatchdog?.TrackOperation("settings save");
         try
         {
+            HostAccessPersistedState access = _hostAccess.PersistedState;
             var s = new AppSettings
             {
                 SourceKind = _sourceSelection.Kind == SourceKind.Monitor ? "monitor" : "window",
@@ -2035,8 +1924,8 @@ public sealed class MainForm : Form
                 Port = (int)_portInput.Value,
                 StreamName = _nameInput.Text.Trim(),
                 Encoder = ((EncoderChoice)_encoderCombo.SelectedItem!).Value,
-                AllowLan = _allowLanApplied,
-                AllowLanPort = _allowLanPort,
+                AllowLan = access.AllowLan,
+                AllowLanPort = access.Port,
                 SkipUpdateVersion = _skippedUpdateVersion ?? "",
             };
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);

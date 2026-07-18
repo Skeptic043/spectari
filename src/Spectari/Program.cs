@@ -198,14 +198,14 @@ internal static class Program
         try { Console.SetIn(new StreamReader(Console.OpenStandardInput())); } catch { }
 
         string me = $"{Environment.UserDomainName}\\{Environment.UserName}";
-        string? owner = Util.PortSetup.ReadReservationOwner(port);
+        HostReservationReview reservation = HostAccessService.ReviewReservation(port, me);
 
         // Nothing reserved, or already ours: nothing to confirm.
-        if (owner is null || owner.Equals(me, StringComparison.OrdinalIgnoreCase))
+        if (reservation.Status == HostReservationStatus.AvailableOrOwned)
             return true;
 
         // Reserved but unidentifiable: don't gamble on a foreign reservation.
-        if (owner == Util.PortSetup.UnknownOwner)
+        if (reservation.Status == HostReservationStatus.UnknownOwner)
         {
             Console.WriteLine();
             Console.WriteLine($"  Port {port}'s URL reservation is held by an account Spectari could not read.");
@@ -215,7 +215,7 @@ internal static class Program
 
         Console.WriteLine();
         Console.WriteLine($"  Port {port} is already reserved by another account:");
-        Console.WriteLine($"    {owner}");
+        Console.WriteLine($"    {reservation.Owner}");
         Console.WriteLine("  Replacing it may break the app that created it.");
         Console.Write("  Replace it with Spectari's reservation? [y/N] ");
         string? answer = Console.ReadLine()?.Trim();
