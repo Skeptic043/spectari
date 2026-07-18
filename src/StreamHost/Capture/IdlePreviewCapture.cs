@@ -22,6 +22,9 @@ internal enum IdlePreviewStartState
 }
 
 internal readonly record struct IdlePreviewPollResult(IdlePreviewPollState State, Bitmap? Image = null);
+internal readonly record struct IdlePreviewStartResult(
+    IdlePreviewStartState State,
+    string? FailureMessage = null);
 
 /// <summary>
 /// Owns preview-only WGC lifecycle work so capture creation and teardown never
@@ -50,19 +53,19 @@ internal sealed class IdlePreviewCapture : IDisposable
         }
     }
 
-    public Task<IdlePreviewStartState> StartForMonitorAsync(IntPtr monitorHandle) =>
+    public Task<IdlePreviewStartResult> StartForMonitorAsync(IntPtr monitorHandle) =>
         StartAsync(
             "monitor",
             IntPtr.Zero,
             trace => ScreenCapture.ForPreviewMonitor(monitorHandle, trace));
 
-    public Task<IdlePreviewStartState> StartForWindowAsync(IntPtr windowHandle) =>
+    public Task<IdlePreviewStartResult> StartForWindowAsync(IntPtr windowHandle) =>
         StartAsync(
             "window",
             windowHandle,
             trace => ScreenCapture.ForPreviewWindow(windowHandle, trace));
 
-    private Task<IdlePreviewStartState> StartAsync(
+    private Task<IdlePreviewStartResult> StartAsync(
         string targetKind,
         IntPtr windowHandle,
         Func<CaptureCreationTrace, ScreenCapture> createCapture)
@@ -76,7 +79,7 @@ internal sealed class IdlePreviewCapture : IDisposable
         lock (_stateGate)
         {
             if (_disposed || _streamStartFenced)
-                return Task.FromResult(IdlePreviewStartState.Canceled);
+                return Task.FromResult(new IdlePreviewStartResult(IdlePreviewStartState.Canceled));
 
             _activeCreation?.Cancel();
             creationCts = new CancellationTokenSource();
@@ -165,7 +168,7 @@ internal sealed class IdlePreviewCapture : IDisposable
         }
     }
 
-    private async Task<IdlePreviewStartState> AwaitCreationAsync(
+    private async Task<IdlePreviewStartResult> AwaitCreationAsync(
         string targetKind,
         int generation,
         CancellationTokenSource creationCts,
@@ -180,39 +183,43 @@ internal sealed class IdlePreviewCapture : IDisposable
             return ReportOutcome(targetKind, generation, await creation, trace);
 
         if (completed == canceled)
-            return IdlePreviewStartState.Canceled;
+            return new IdlePreviewStartResult(IdlePreviewStartState.Canceled);
 
         if (!CancelTimedOutGeneration(generation, creationCts))
         {
             if (creation.IsCompleted)
                 return ReportOutcome(targetKind, generation, await creation, trace);
-            return IdlePreviewStartState.Canceled;
+            return new IdlePreviewStartResult(IdlePreviewStartState.Canceled);
         }
 
         Console.WriteLine(
             $"[preview] {targetKind} creation timed out after 5 seconds; preview disabled; " +
             $"pending step: {trace.CurrentStep}; last completed step: {trace.LastCompletedStep}");
-        return IdlePreviewStartState.TimedOut;
+        return new IdlePreviewStartResult(IdlePreviewStartState.TimedOut);
     }
 
-    private IdlePreviewStartState ReportOutcome(
+    private IdlePreviewStartResult ReportOutcome(
         string targetKind,
         int generation,
         CreationOutcome outcome,
         CaptureCreationTrace trace)
     {
         if (!IsGenerationCurrent(generation))
-            return IdlePreviewStartState.Canceled;
+            return new IdlePreviewStartResult(IdlePreviewStartState.Canceled);
 
+        string? failureMessage = null;
         if (outcome.State == IdlePreviewStartState.Failed && outcome.Error is not null)
         {
+            string errorMessage = SingleLine(outcome.Error.Message);
+            if (outcome.Error is CaptureTargetUnavailableException)
+                failureMessage = errorMessage;
             Console.WriteLine(
                 $"[preview] {targetKind} creation failed; preview disabled; " +
                 $"pending step: {trace.CurrentStep}; last completed step: {trace.LastCompletedStep}; " +
-                $"error: {SingleLine(outcome.Error.Message)}");
+                $"error: {errorMessage}");
         }
 
-        return outcome.State;
+        return new IdlePreviewStartResult(outcome.State, failureMessage);
     }
 
     public IdlePreviewPollResult Poll()

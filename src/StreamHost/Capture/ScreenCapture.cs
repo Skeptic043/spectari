@@ -153,12 +153,27 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         trace?.Begin(itemStep);
         GraphicsCaptureItem item = createItem();
         trace?.Complete(itemStep);
-        var capture = new ScreenCapture(item, writeDiagnostics, trace);
+        Windows.Graphics.SizeInt32 itemSize = item.Size;
+        int width = itemSize.Width & ~1;
+        int height = itemSize.Height & ~1;
+        if (width <= 0 || height <= 0)
+        {
+            throw new CaptureTargetUnavailableException(
+                $"{targetKind} has no capturable surface ({itemSize.Width}x{itemSize.Height}); pick another source.");
+        }
+
+        var capture = new ScreenCapture(item, itemSize, width, height, writeDiagnostics, trace);
         trace?.MarkChainProven();
         return capture;
     }
 
-    private ScreenCapture(GraphicsCaptureItem item, bool writeDiagnostics, CaptureCreationTrace? trace)
+    private ScreenCapture(
+        GraphicsCaptureItem item,
+        Windows.Graphics.SizeInt32 itemSize,
+        int width,
+        int height,
+        bool writeDiagnostics,
+        CaptureCreationTrace? trace)
     {
         _writeDiagnostics = writeDiagnostics;
         trace?.Begin("D3D11CreateDevice");
@@ -213,12 +228,12 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         _winrtDevice = D3DInterop.CreateWinRtDevice(_device);
         trace?.Complete("CreateDirect3D11DeviceFromDXGIDevice");
         _item = item;
-        Width = _item.Size.Width & ~1;   // even-aligned for 4:2:0 chroma
-        Height = _item.Size.Height & ~1;
+        Width = width;   // even-aligned for 4:2:0 chroma
+        Height = height;
         _contentWidth = _poolWidth = Width;
         _contentHeight = _poolHeight = Height;
-        _reportedContentWidth = _item.Size.Width;
-        _reportedContentHeight = _item.Size.Height;
+        _reportedContentWidth = itemSize.Width;
+        _reportedContentHeight = itemSize.Height;
 
         var desc = new Texture2DDescription
         {
@@ -260,7 +275,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
 
         trace?.Begin("Direct3D11CaptureFramePool.CreateFreeThreaded");
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-            _winrtDevice, CaptureFormat, CaptureBufferCount, _item.Size);
+            _winrtDevice, CaptureFormat, CaptureBufferCount, itemSize);
         trace?.Complete("Direct3D11CaptureFramePool.CreateFreeThreaded");
         _framePool.FrameArrived += OnFrameArrived;
         trace?.Begin("Direct3D11CaptureFramePool.CreateCaptureSession");
@@ -688,4 +703,9 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         }
         _frameSignal.Dispose();
     }
+}
+
+internal sealed class CaptureTargetUnavailableException : Exception
+{
+    internal CaptureTargetUnavailableException(string message) : base(message) { }
 }
