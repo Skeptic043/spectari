@@ -328,28 +328,23 @@ internal static class Program
         session.Start();
         done.Wait();
 
-        // Same one-shot safety net as the GUI: a detected pipeline stall or dead
-        // GPU encoder recreates the session once with the CPU encoder.
-        bool detectedStall = StreamSession.IsPipelineStallReason(stopReason);
-        bool encoderExited = stopReason?.StartsWith("encoder exited",
-            StringComparison.Ordinal) ?? false;
-        if ((detectedStall || encoderExited) && opts.Encoder != "libx264")
+        CpuRecoveryPlan? recovery = StreamController.PlanCpuRecovery(
+            stopReason,
+            config,
+            session.OutputWidth,
+            session.OutputHeight,
+            recoveryAlreadyUsed: false,
+            userRequested: false);
+        if (recovery is not null)
         {
-            Console.WriteLine(detectedStall
-                ? "[pipeline] Video pipeline stalled; restarting the session once with libx264…"
-                : "[encoder] GPU encoder exited; restarting with the CPU encoder (libx264)…");
-            // Watchdog-detected GPU stalls clear any prior positive verdict at the
-            // detection site. Keep this Auto-only call for unexpected ffmpeg exits,
-            // which reach the same fallback without passing through the watchdog.
-            if (encoderExited && (string.IsNullOrEmpty(opts.Encoder) || opts.Encoder == "auto"))
+            Console.WriteLine(recovery.ConsoleMessage);
+            if (recovery.InvalidateAutoProbe)
                 Spectari.Encode.FfmpegEncoder.InvalidateProbeCache();
-            // libx264 at 1440p and up may not sustain the same resolution/fps the
-            // GPU was handling - warn instead of presenting fallback as recovery.
-            if (session.OutputHeight >= 1440)
-                Console.WriteLine($"[encoder] warning: libx264 (CPU) may not keep up at {session.OutputWidth}x{session.OutputHeight}@{opts.Fps}; lower the Preset if playback is choppy.");
+            if (recovery.OutputHeight >= 1440)
+                Console.WriteLine(recovery.ConsoleCapacityWarning);
             Thread.Sleep(800); // let the port release
             done.Reset();
-            var retry = new StreamSession(config with { Encoder = "libx264" });
+            var retry = new StreamSession(recovery.FallbackConfig);
             retry.Stopped += r => { stopReason = r; done.Set(); };
             Console.CancelKeyPress += (_, e) => { e.Cancel = true; retry.Stop(); };
             retry.Start();

@@ -171,21 +171,9 @@ public sealed class MainForm : Form
 
     private List<WindowDescription> _windows = [];
     private List<MonitorDescription> _monitors = [];
-    private StreamSession? _session;
+    private readonly StreamController _streamController;
     private WatchForm? _watchForm;
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
-    private bool _retriedCpu;       // guards the one-shot GPU→CPU encoder fallback
-    private bool _pendingCpuRetry;  // a fallback restart is scheduled; cancelled if the user stops
-    private System.Windows.Forms.Timer? _cpuRetryTimer; // the 250 ms delay before the CPU restart; stored so close can dispose it
-    // Bumped on every session teardown and on a cancelled retry. The CPU-retry
-    // timer captures it when armed and re-checks it when it fires: a generation,
-    // not a bool, so a tick queued behind a stop/start cycle can't act on the new
-    // one (AppRunContext keeps the process alive for an open Watch window, so a
-    // stale tick could otherwise start an invisible session on a closed form).
-    private int _lifecycleGen;
-    private bool _stopping;               // RequestStop sent; waiting for the session's Stopped event
-    private SessionConfig? _lastConfig;   // last launched config, reused for the fix-port restart
-    private SessionConfig? _pendingSwitch; // queued source switch, launched when Stopped fires
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
     private bool _refreshingSourceOptions; // suppresses preset events caused by Native relabeling
     // Persisted "LAN access was actually applied" flag: set only on a successful
@@ -387,6 +375,19 @@ public sealed class MainForm : Form
         _linkBox.BackColor = Card;
         _linkBox.ForeColor = Dim;
 
+        _streamController = new StreamController(new StreamControllerHooks(
+            AcquireStreamStartFenceAsync,
+            StopIdleServer,
+            action =>
+            {
+                if (IsDisposed || Disposing) return;
+                BeginInvoke(action);
+            },
+            name => _uiHangWatchdog?.TrackOperation(name),
+            AppendLog));
+        _streamController.StateChanged += RenderStreamState;
+        _streamController.SessionStarted += RenderStartedStream;
+
         // Nothing gets disabled - the selected radio decides which combo is USED.
         _windowCombo.DropDown += (_, _) => PopulateWindows();   // fresh list every open
         _monitorCombo.DropDown += (_, _) => PopulateMonitors(); // monitors change too (dock/undock)
@@ -406,11 +407,10 @@ public sealed class MainForm : Form
         };
         _startButton.Click += async (_, _) =>
         {
-            // Clicking during a scheduled CPU retry cancels the retry.
-            // Cancelling a scheduled CPU retry: the GPU run got far enough to
-            // schedule a fallback, so treat its key as used and rotate it.
-            if (_pendingCpuRetry) { CancelCpuRetry(); OnSessionStopped(null, wentLive: true); return; }
-            if (_session is null) await StartStreamAsync(); else StopStream();
+            if (_streamController.HasSession || _streamController.IsCpuRetryPending)
+                _streamController.Stop();
+            else
+                await StartStreamAsync();
         };
         _switchButton.Click += (_, _) => ShowSwitchDialog();
         _copyButton.Click += (_, _) => CopyLink(BuildUrl(""));
@@ -468,30 +468,21 @@ public sealed class MainForm : Form
             _statsTimer.Stop();
             StopIdlePreview(hideLayout: true);
             _idlePreviewCapture.Dispose();
-            // Detach the session before stopping it: Stop() joins the session
-            // thread, whose Stopped callback posts back here via BeginInvoke. With
-            // _session nulled, that callback's ReferenceEquals(_session, session)
-            // guard short-circuits, so it can't re-enter the timers we dispose below.
-            var session = _session;
-            _session = null;
             // Fail closed: if teardown wedges past the join timeout and a Watch
-            // window keeps the process alive, the detached session would keep
+            // window keeps the process alive, the detached session could keep
             // streaming with no handle left to stop it. Take the whole app down
             // (the ChildJob job object reaps ffmpeg on process exit); this also
             // closes any open Watch window, a cost accepted over an invisible stream.
             using IDisposable? stopOperation = _uiHangWatchdog?.TrackOperation("stream stop UI phase");
-            if (session is not null && !session.Stop())
+            if (!_streamController.StopForClose())
             {
                 Console.WriteLine("[shutdown] stream teardown did not finish in time; closing the app to avoid an invisible stream.");
                 Environment.Exit(1);
             }
             StopIdleServer();
-            // Cancel a scheduled CPU retry so its timer can't fire on this closed
-            // form and start an invisible session (a Watch window may keep the
-            // process, and its message loop, alive after this form is gone).
-            CancelCpuRetry();
             // These timers and the tooltip are not in a components container, so
             // nothing else disposes them.
+            _streamController.Dispose();
             _statsTimer.Dispose();
             _idleRetryTimer.Dispose();
             _previewDebounceTimer.Dispose();
@@ -581,8 +572,7 @@ public sealed class MainForm : Form
         Activate();
     }
 
-    private bool IsTrueIdle =>
-        _session is null && !_stopping && !_pendingCpuRetry && _pendingSwitch is null;
+    private bool IsTrueIdle => _streamController.IsIdleSurface;
 
     private bool CanRunIdlePreview =>
         !_closing && IsTrueIdle && Visible && WindowState != FormWindowState.Minimized;
@@ -895,9 +885,8 @@ public sealed class MainForm : Form
         if (config.Port != 8093)
             AppendLog("Note: setup.bat / Open port configure one port at a time; other ports need their own run.");
 
-        _retriedCpu = false;
         SaveSettings();
-        await LaunchSessionAsync(config);
+        await _streamController.StartAsync(config);
     }
 
     /// <summary>Reads the whole UI into a SessionConfig, or null (with a log line)
@@ -961,152 +950,65 @@ public sealed class MainForm : Form
         };
     }
 
-
-    /// <summary>Starts a session and wires its Stopped event, including the automatic
-    /// CPU-encoder retry when the live video pipeline stalls. Returns false if it couldn't start.</summary>
-    private async Task<bool> LaunchSessionAsync(SessionConfig config)
+    private async Task<IDisposable?> AcquireStreamStartFenceAsync()
     {
-        using IDisposable? operation = _uiHangWatchdog?.TrackOperation("stream start UI phase");
         _previewDebounceTimer.Stop();
         _previewPollTimer.Stop();
         _previewWaitingWindow = IntPtr.Zero;
         SetPreviewPlaceholder("Preview available while idle.");
         SetPreviewLayoutVisible(false);
+        return await _idlePreviewCapture.AcquireStreamStartFenceAsync();
+    }
 
-        // Block preview attachment until _session is assigned.
-        IdlePreviewCapture.IdlePreviewStreamFence? previewFence =
-            await _idlePreviewCapture.AcquireStreamStartFenceAsync();
-        if (previewFence is null) return false; // only while the form is closing
-
-        StopIdleServer(); // hand the port to the session
-        StreamSession session;
-        try
+    private void RenderStreamState(StreamControllerStateChange change)
+    {
+        switch (change.Current)
         {
-            session = new StreamSession(config);
+            case StreamControllerState.Stopping:
+                _statsTimer.Stop();
+                _startButton.Text = "…  Stopping";
+                _statusLabel.Text = "Stopping…";
+                _statusLabel.ForeColor = Color.Goldenrod;
+                break;
+            case StreamControllerState.Switching:
+                _statsTimer.Stop();
+                _statusLabel.Text = change.Trigger == StreamController.SourceSwitchTrigger
+                    ? "Switching source…"
+                    : "Restarting…";
+                _statusLabel.ForeColor = Color.Goldenrod;
+                break;
+            case StreamControllerState.Idle or StreamControllerState.Failed
+                when change.RenderCompletion:
+                RenderStoppedStream(change.Reason, change.WentLive);
+                break;
         }
-        catch (Exception ex)
-        {
-            AppendLog($"Failed to start: {ex.Message}");
-            _session = null;
-            StartIdleServer();
-            previewFence.Dispose();
-            ResumeIdlePreview();
-            return false;
-        }
+    }
 
-        // Stopped fires only after the server is disposed and the port is released.
-        // A stalled native session thread may be abandoned, but its downstream
-        // resources are fenced off before this callback can start a replacement.
-        session.Stopped += reason =>
-        {
-            try
-            {
-                BeginInvoke(async () =>
-                {
-                    if (!ReferenceEquals(_session, session)) return; // superseded by a newer session
-                    _session = null;
-                    _lifecycleGen++; // this teardown voids any CPU-retry tick still queued from an earlier one
-                    bool userRequested = _stopping;
-                    _stopping = false;
-
-                    // A queued source switch or fix-port restart takes priority.
-                    if (_pendingSwitch is { } next)
-                    {
-                        _pendingSwitch = null;
-                        await LaunchSessionAsync(next);
-                        return;
-                    }
-
-                    // A detected pipeline stall or dead GPU encoder gets one clean
-                    // session restart on the CPU encoder.
-                    bool detectedStall = StreamSession.IsPipelineStallReason(reason);
-                    bool encoderExited = reason.StartsWith("encoder exited", StringComparison.Ordinal);
-                    if (!userRequested && (detectedStall || encoderExited) && !_retriedCpu && config.Encoder != "libx264")
-                    {
-                        _retriedCpu = true;
-                        _pendingCpuRetry = true;
-                        AppendLog(detectedStall
-                            ? "Video pipeline stalled; restarting the session once with libx264…"
-                            : "GPU encoder exited; restarting with the CPU encoder (libx264)…");
-                        // Watchdog-detected GPU stalls clear any prior positive verdict
-                        // immediately. Keep this Auto-only call for unexpected ffmpeg
-                        // exits, which reach fallback without passing through the watchdog.
-                        if (encoderExited && (string.IsNullOrEmpty(config.Encoder) || config.Encoder == "auto"))
-                            Spectari.Encode.FfmpegEncoder.InvalidateProbeCache();
-                        // libx264 at 1440p and up may not sustain the same resolution/fps
-                        // the GPU handled - warn instead of calling fallback a recovery.
-                        if (session.OutputHeight >= 1440)
-                            AppendLog($"Warning: libx264 (CPU) may not keep up at {session.OutputWidth}x{session.OutputHeight}@{config.Fps}; lower the Preset if playback is choppy.");
-                        var fallback = config with { Encoder = "libx264" };
-                        int gen = _lifecycleGen; // the cycle this retry belongs to
-                        _cpuRetryTimer?.Dispose(); // never expected here, but never leak one either
-                        var timer = new System.Windows.Forms.Timer { Interval = 250 };
-                        _cpuRetryTimer = timer;
-                        timer.Tick += async (_, _) =>
-                        {
-                            // Operate on the captured instance, never the shared field: a
-                            // stale tick must not stop/dispose a newer timer that a later
-                            // cycle has since placed in the field. Only null the field when
-                            // it still references THIS timer.
-                            timer.Stop();
-                            timer.Dispose();
-                            if (ReferenceEquals(_cpuRetryTimer, timer)) _cpuRetryTimer = null;
-                            // A stale tick must do nothing: the form may have closed while a
-                            // Watch window kept the loop alive, or a later stop/start cycle
-                            // may have moved on. The generation catches the latter even when
-                            // _pendingCpuRetry has been re-armed by a new cycle.
-                            if (IsDisposed || gen != _lifecycleGen) return;
-                            if (_pendingCpuRetry) { _pendingCpuRetry = false; await LaunchSessionAsync(fallback); }
-                        };
-                        timer.Start();
-                        return;
-                    }
-                    OnSessionStopped(userRequested ? null : reason, session.WentLive);
-                });
-            }
-            catch { }
-        };
-        _session = session;
-        _lastConfig = config;
-        previewFence.Dispose();
-        session.Start();
-
+    private void RenderStartedStream(SessionConfig config)
+    {
         _livePort = config.Port;
         _startButton.Text = "■  Stop";
         _startButton.BackColor = Color.FromArgb(104, 58, 58);
         SetLiveLock(true);
         _statsTimer.Start();
         UpdateLinkBox();
-        return true;
     }
 
-    /// <summary>Request a stop and wait for the session's Stopped event; the UI
-    /// shows "Stopping…" until teardown really finished instead of pretending
-    /// the stream is gone while the old session still owns the port.</summary>
-    private void StopStream()
+    private void RenderStoppedStream(string? reason, bool wentLive)
     {
-        using IDisposable? operation = _uiHangWatchdog?.TrackOperation("stream stop UI phase");
-        if (_session is null || _stopping) return;
-        _pendingCpuRetry = false;
-        _pendingSwitch = null;
-        _stopping = true;
         _statsTimer.Stop();
-        _startButton.Text = "…  Stopping";
-        _statusLabel.Text = "Stopping…";
-        _statusLabel.ForeColor = Color.Goldenrod;
-        _session.RequestStop();
-    }
-
-    /// <summary>Cancel a scheduled GPU→CPU retry: clear the flag, stop and dispose
-    /// the timer so a queued tick can't fire, and advance the lifecycle generation
-    /// so a tick already dispatched no-ops. Safe to call when nothing is pending.</summary>
-    private void CancelCpuRetry()
-    {
-        _pendingCpuRetry = false;
-        _cpuRetryTimer?.Stop();
-        _cpuRetryTimer?.Dispose();
-        _cpuRetryTimer = null;
-        _lifecycleGen++;
+        _startButton.Text = "▶  Start streaming";
+        _startButton.BackColor = AccentDark;
+        Text = "Spectari";
+        _livePort = 0;
+        SetLiveLock(false);
+        // A live run's viewer key must be rotated before idle links render.
+        if (wentLive) _pendingKey = SessionConfig.NewViewKey();
+        UpdateLinkBox();
+        _statusLabel.Text = reason is null or "stopped" ? "Not streaming." : $"Stopped: {reason}";
+        _statusLabel.ForeColor = reason is null or "stopped" ? Dim : Red;
+        StartIdleServer();
+        ResumeIdlePreview();
     }
 
     /// <summary>Guided switch: a small popup with the source, preset, bitrate,
@@ -1115,7 +1017,7 @@ public sealed class MainForm : Form
     /// (or plain start when idle), so both paths stay one code path.</summary>
     private void ShowSwitchDialog()
     {
-        if (_stopping) return;
+        if (_streamController.IsStopping) return;
 
         // Enumerate fresh source lists for the popup WITHOUT touching the main
         // controls, so pressing Cancel leaves the main window's selection exactly
@@ -1250,7 +1152,7 @@ public sealed class MainForm : Form
         grid.Controls.Add(new Label { Text = "Encoder:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 5);
         grid.Controls.Add(encoderCombo, 1, 5);
 
-        var ok = new Button { Text = _session is null ? "Start" : "Switch", Width = 96, Height = 28, DialogResult = DialogResult.OK };
+        var ok = new Button { Text = _streamController.HasSession ? "Switch" : "Start", Width = 96, Height = 28, DialogResult = DialogResult.OK };
         var cancel = new Button { Text = "Cancel", Width = 80, Height = 28, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0) };
         buttons.Controls.Add(cancel);
@@ -1351,43 +1253,19 @@ public sealed class MainForm : Form
     private async void SwitchSource()
     {
         using IDisposable? operation = _uiHangWatchdog?.TrackOperation("stream switch UI phase");
-        if (_session is null) { await StartStreamAsync(); return; }
-        if (_stopping) return;
-        var config = BuildConfigFromUi(_livePort, _session.ViewKey);
+        StreamSession? session = _streamController.CurrentSession;
+        if (session is null) { await StartStreamAsync(); return; }
+        if (_streamController.IsStopping) return;
+        var config = BuildConfigFromUi(_livePort, session.ViewKey);
         if (config is null) return;
-        _retriedCpu = false;
-        _pendingSwitch = config;
-        _stopping = true;
-        _statsTimer.Stop();
-        _statusLabel.Text = "Switching source…";
-        _statusLabel.ForeColor = Color.Goldenrod;
-        AppendLog($"Switching to {config.SourceName}. Viewers reconnect automatically.");
-        SaveSettings();
-        _session.RequestStop();
-    }
-
-    private void OnSessionStopped(string? reason, bool wentLive)
-    {
-        using IDisposable? operation = _uiHangWatchdog?.TrackOperation("stream stop completion");
-        _statsTimer.Stop();
-        _session = null;
-        _stopping = false;
-        _startButton.Text = "▶  Start streaming";
-        _startButton.BackColor = AccentDark;
-        Text = "Spectari";
-        _livePort = 0;
-        SetLiveLock(false);
-        // A run that actually served viewers rotates the viewer key, so links from
-        // that run stop working (the per-run key model). A start that never went
-        // live (bind failure, early capture error) keeps the pending key so an
-        // already-copied idle link still works on the next attempt. Rotate before
-        // the link box refreshes so it shows the new idle key.
-        if (wentLive) _pendingKey = SessionConfig.NewViewKey();
-        UpdateLinkBox();
-        _statusLabel.Text = reason is null or "stopped" ? "Not streaming." : $"Stopped: {reason}";
-        _statusLabel.ForeColor = reason is null or "stopped" ? Dim : Red;
-        StartIdleServer(); // take the port back so open tabs see "not streaming yet"
-        ResumeIdlePreview();
+        _streamController.Switch(
+            config,
+            StreamController.SourceSwitchTrigger,
+            () =>
+            {
+                AppendLog($"Switching to {config.SourceName}. Viewers reconnect automatically.");
+                SaveSettings();
+            });
     }
 
     /// <summary>Serve the holding page whenever the app is open but no stream is
@@ -1396,7 +1274,7 @@ public sealed class MainForm : Form
     /// session and the idle server trade the port back and forth.</summary>
     private void StartIdleServer()
     {
-        if (_session is not null || _idleServer is not null) { _idleRetryTimer.Stop(); return; }
+        if (_streamController.HasSession || _idleServer is not null) { _idleRetryTimer.Stop(); return; }
         try
         {
             var server = new WebServer((int)_portInput.Value, null, null, _nameInput.Text.Trim());
@@ -1446,7 +1324,7 @@ public sealed class MainForm : Form
     /// <summary>Port or name changed while idle - rebind so the holding page follows.</summary>
     private void RestartIdleServer()
     {
-        if (_session is not null || _stopping) return;
+        if (_streamController.HasSession || _streamController.IsStopping) return;
         StopIdleServer();
         StartIdleServer();
     }
@@ -1629,15 +1507,17 @@ public sealed class MainForm : Form
 
     private void UpdateStatus()
     {
-        var b = _session?.Broadcaster;
-        if (b is null || _stopping) return;
+        StreamSession? session = _streamController.CurrentSession;
+        var b = session?.Broadcaster;
+        if (b is null || _streamController.IsStopping) return;
         if (b.State == "starting")
         {
             _statusLabel.ForeColor = Color.Goldenrod;
             _statusLabel.Text = "Starting: waiting for the first captured frame…";
             return;
         }
-        if (_session!.LocalOnly)
+        _streamController.MarkLive();
+        if (session!.LocalOnly)
         {
             _statusLabel.ForeColor = Color.Goldenrod;
             _statusLabel.Text = $"LIVE, THIS PC ONLY: click Open port in Misc to let viewers reach port {_livePort}";
@@ -1655,7 +1535,7 @@ public sealed class MainForm : Form
             {
                 _statusLabel.ForeColor = Green;
                 string lanTag = tailscaleReachable ? "" : " (LAN)";
-                _statusLabel.Text = $"LIVE{lanTag} · {_session.Description} · {EncoderLabel(_session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
+                _statusLabel.Text = $"LIVE{lanTag} · {session.Description} · {EncoderLabel(session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
             }
             else
             {
@@ -1685,7 +1565,7 @@ public sealed class MainForm : Form
     private int LinkPort() => _livePort > 0 ? _livePort : (int)_portInput.Value;
 
     private bool ActiveServerIsLocalOnly() =>
-        _session is { } live ? live.LocalOnly : _idleServer?.LocalOnly == true;
+        _streamController.CurrentSession is { } live ? live.LocalOnly : _idleServer?.LocalOnly == true;
 
     private string? LanShareAddressForPort(int port) =>
         LanAppliedForPort(port)
@@ -1699,7 +1579,7 @@ public sealed class MainForm : Form
         // While streaming, the live session's key; while idle, the pending key the
         // next stream will accept, so a link copied now already carries ?k= and a
         // tab opened early self-connects when the stream starts.
-        if (pathSuffix.Length == 0 && (_session?.ViewKey ?? _pendingKey) is { } key)
+        if (pathSuffix.Length == 0 && (_streamController.CurrentSession?.ViewKey ?? _pendingKey) is { } key)
             url += $"?k={key}";
         return url;
     }
@@ -1891,17 +1771,14 @@ public sealed class MainForm : Form
                         _allowLanPort = port;
                         SaveSettings();
                         AppendLog($"Port {port} configured.");
-                        if (_session is not null && _lastConfig is not null && !_stopping)
+                        if (_streamController.CurrentSession is not null
+                            && _streamController.LastConfig is { } lastConfig
+                            && !_streamController.IsStopping)
                         {
                             AppendLog("Restarting the stream so the new access takes effect…");
-                            _pendingSwitch = _lastConfig;
-                            _stopping = true;
-                            _statsTimer.Stop();
-                            _statusLabel.Text = "Restarting…";
-                            _statusLabel.ForeColor = Color.Goldenrod;
-                            _session.RequestStop();
+                            _streamController.Switch(lastConfig, StreamController.AccessRestartTrigger);
                         }
-                        else if (_session is null)
+                        else if (_streamController.CurrentSession is null)
                         {
                             RestartIdleServer();
                             UpdateLinkBox();
@@ -1928,7 +1805,7 @@ public sealed class MainForm : Form
             // Capture the active session identity as one immutable reference, then
             // keep every CLI/DXGI/hash operation off the UI thread. A missing active
             // identity falls back honestly to the first hardware adapter.
-            var activeCapture = _session?.CaptureAdapter;
+            var activeCapture = _streamController.CurrentSession?.CaptureAdapter;
             var diagnostics = await Task.Run(() =>
             {
                 string tailnet = RedactPeerNames(Util.StreamDiscovery.DescribeTailnetPaths());
@@ -1977,7 +1854,12 @@ public sealed class MainForm : Form
             // clipboard and, from there, a public issue. The live keys are passed
             // as exact secrets so a raw key without a ?k= wrapper is caught too.
             string scrubbed = Util.BundleScrubber.Scrub(sb.ToString(),
-                new[] { _session?.ViewKey, _lastConfig?.ViewKey, _pendingKey });
+                new[]
+                {
+                    _streamController.CurrentSession?.ViewKey,
+                    _streamController.LastConfig?.ViewKey,
+                    _pendingKey,
+                });
             Clipboard.SetText(scrubbed);
             AppendLog("Log copied (scrubbed, with version, system, and encoder info); paste it into a bug report.");
         }
@@ -2066,7 +1948,7 @@ public sealed class MainForm : Form
     /// <summary>One-line description of the running session (or "not streaming"),
     /// shared by the support bundle and the crash log.</summary>
     internal string DescribeSessionState() =>
-        _session is { } s
+        _streamController.CurrentSession is { } s
             ? $"{s.Description} via {s.ActiveEncoder}, state {s.Broadcaster?.State}, viewers {s.Broadcaster?.ViewerCount}, localOnly {s.LocalOnly}"
             : "not streaming";
 
@@ -2076,7 +1958,7 @@ public sealed class MainForm : Form
     /// can't hang the exit. Guarded - a crash handler must never throw again.</summary>
     internal void StopSessionForShutdown()
     {
-        try { _session?.Stop(); } catch { }
+        try { _streamController.StopForShutdown(); } catch { }
     }
 
     private static List<string> GpuAdapters()
