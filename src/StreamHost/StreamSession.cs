@@ -192,11 +192,20 @@ public sealed class StreamSession
         // standard capture as fallback and for window shares — see
         // AutoMonitorCapture). --compat-capture forces duplication-only,
         // kept for diagnostics.
-        ICaptureSource capture = _config.WindowHandle != IntPtr.Zero
-            ? ScreenCapture.ForWindow(_config.WindowHandle)
-            : _config.CompatibilityCapture
-                ? new DuplicationCapture(_config.MonitorHandle)
-                : new AutoMonitorCapture(_config.MonitorHandle);
+        ICaptureSource capture;
+        try
+        {
+            capture = _config.WindowHandle != IntPtr.Zero
+                ? ScreenCapture.ForWindow(_config.WindowHandle)
+                : _config.CompatibilityCapture
+                    ? new DuplicationCapture(_config.MonitorHandle)
+                    : new AutoMonitorCapture(_config.MonitorHandle);
+        }
+        catch (CaptureTargetUnavailableException ex)
+        {
+            Console.Error.WriteLine($"[capture] {ex.Message}");
+            return ex.Message;
+        }
         using var captureLifetime = TrackCleanup(capture.Dispose, "capture");
         _captureAdapter = new(capture.GpuVendorId, capture.AdapterLuid, capture.DriverVersion);
         if (_config.NoCursor) capture.CursorEnabled = false;

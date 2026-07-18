@@ -48,6 +48,7 @@ public static class WindowEnumerator
                 var identity = new WindowIdentity(hWnd, pid);
                 seen.Add(identity);
                 WindowSize size = GetStableSize(hWnd, identity);
+                if (size.Width < 2 || size.Height < 2) return true;
                 windows.Add(new WindowDescription(hWnd, title, process, pid, size.Width, size.Height));
                 return true;
             }, IntPtr.Zero);

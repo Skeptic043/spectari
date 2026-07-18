@@ -613,7 +613,7 @@ public sealed class MainForm : Form
         SetPreviewLayoutVisible(true);
         using IDisposable? operation = _uiHangWatchdog?.TrackOperation("preview start");
 
-        IdlePreviewStartState startState;
+        IdlePreviewStartResult startResult;
         try
         {
             Console.WriteLine(
@@ -643,7 +643,7 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                startState = await _idlePreviewCapture.StartForWindowAsync(handle);
+                startResult = await _idlePreviewCapture.StartForWindowAsync(handle);
             }
             else
             {
@@ -654,13 +654,14 @@ public sealed class MainForm : Form
                     return;
                 }
 
-                startState = await _idlePreviewCapture.StartForMonitorAsync(_monitors[index].Handle);
+                startResult = await _idlePreviewCapture.StartForMonitorAsync(_monitors[index].Handle);
             }
 
+            IdlePreviewStartState startState = startResult.State;
             if (startState == IdlePreviewStartState.Canceled) return;
             if (startState is IdlePreviewStartState.TimedOut or IdlePreviewStartState.Failed)
             {
-                SetPreviewPlaceholder("Preview unavailable.");
+                SetPreviewPlaceholder(startResult.FailureMessage ?? "Preview unavailable.");
                 return;
             }
 
