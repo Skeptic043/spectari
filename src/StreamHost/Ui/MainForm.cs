@@ -610,6 +610,9 @@ public sealed class MainForm : Form
         IdlePreviewStartState startState;
         try
         {
+            Console.WriteLine(
+                $"[preview] start pick: kind={(_rbWindow.Checked ? "window" : "monitor")} " +
+                $"windowIndex={_windowCombo.SelectedIndex} monitorIndex={_monitorCombo.SelectedIndex}");
             if (_rbWindow.Checked)
             {
                 int index = _windowCombo.SelectedIndex;
