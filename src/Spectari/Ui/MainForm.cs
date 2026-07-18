@@ -100,8 +100,7 @@ public sealed class MainForm : Form
         public string SkipUpdateVersion { get; set; } = "";
     }
 
-    private static readonly string SettingsPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "settings.json");
+    private static readonly string SettingsPath = AppPaths.SettingsFile;
 
     private readonly RadioButton _rbWindow = new() { Text = "Game / window", Checked = true, AutoSize = true };
     private readonly RadioButton _rbMonitor = new() { Text = "Monitor", AutoSize = true };
@@ -1954,7 +1953,7 @@ public sealed class MainForm : Form
             sb.AppendLine($"ffmpeg build: {diagnostics.ffmpeg.buildconf}");
             sb.AppendLine($"ffmpeg sha256: {diagnostics.ffmpeg.sha256}");
             sb.AppendLine($"tailnet:  {diagnostics.tailnet}");
-            sb.AppendLine($"enc cache: {ReadSmallFile(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "encoder.cache"))}");
+            sb.AppendLine($"enc cache: {ReadSmallFile(AppPaths.EncoderCacheFile)}");
             // A report can compare this to the cached verdict above. During a live
             // session it describes the exact capture adapter supplied to encoder selection;
             // while idle the label makes the primary-adapter fallback explicit.
@@ -1995,8 +1994,7 @@ public sealed class MainForm : Form
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{path}\"") { UseShellExecute = true });
                 return;
             }
-            string folder = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "logs");
+            string folder = AppPaths.LogsDirectory;
             Directory.CreateDirectory(folder);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"\"{folder}\"") { UseShellExecute = true });
         }

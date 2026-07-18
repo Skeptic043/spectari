@@ -96,8 +96,7 @@ public sealed class WatchForm : Form
     {
         try
         {
-            string dataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "webview2");
+            string dataDir = AppPaths.WebView2UserDataDirectory;
             // Let the background notification chime sound without a click:
             // Chromium's autoplay policy would otherwise block a fresh AudioContext
             // in this embedded browser. This affects only the Watch window.

@@ -18,8 +18,7 @@ public static class ConsoleMirror
         {
             try
             {
-                string logDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "StreamHost", "logs");
+                string logDir = AppPaths.LogsDirectory;
                 Directory.CreateDirectory(logDir);
                 foreach (var old in new DirectoryInfo(logDir).GetFiles("*.log")
                              .OrderByDescending(f => f.CreationTimeUtc).Skip(9))

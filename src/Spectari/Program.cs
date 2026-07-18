@@ -22,8 +22,14 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Util.AppPaths.MigrateLegacyData();
+
         if (args.Length == 0)
+        {
             Util.ConsoleMirror.Install();
+            // Migration ran before any sink existed; land its outcome in the log.
+            if (Util.AppPaths.MigrationNote is { } note) Console.WriteLine(note);
+        }
 
         // WinForms needs Windows culture data for input-language messages, while
         // StreamHost's own numeric, version, and command formatting stays invariant.
@@ -226,6 +232,8 @@ internal static class Program
     {
         EnsureConsole();
         Util.ConsoleMirror.Install();
+        // Migration ran before any sink existed; land its outcome in the log.
+        if (Util.AppPaths.MigrationNote is { } note) Console.WriteLine(note);
 
         Options opts;
         try { opts = Options.Parse(args); }
