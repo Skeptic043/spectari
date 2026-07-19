@@ -78,15 +78,21 @@ internal sealed class WatchAudioSessionConsolidator : IDisposable
     }
 }
 
-internal static class WindowsAudioSessionConsolidator
+internal static unsafe class WindowsAudioSessionConsolidator
 {
     private const int RenderDataFlow = 0;
     private const uint ActiveDeviceState = 0x00000001;
     private const uint ClassContextAll = 0x00000017;
     private const string DisplayName = "Spectari";
 
+    private static readonly Guid MMDeviceEnumeratorClassId =
+        new("BCDE0395-E52F-467C-8E3D-C4579291692E");
+    private static readonly Guid MMDeviceEnumeratorId =
+        new("A95664D2-9614-4F35-A746-DE8DB63617E6");
     private static readonly Guid AudioSessionManager2Id =
         new("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+    private static readonly Guid AudioSessionControl2Id =
+        new("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D");
     private static readonly Guid GroupingId =
         new("29B61C75-C3BD-4D42-8915-921A34E4896F");
     private static readonly Guid EventContext =
@@ -94,34 +100,43 @@ internal static class WindowsAudioSessionConsolidator
 
     internal static void Apply(IReadOnlySet<uint> processIds)
     {
-        IMMDeviceEnumerator? deviceEnumerator = null;
-        IMMDeviceCollection? devices = null;
+        nint deviceEnumerator = 0;
+        nint devices = 0;
         try
         {
-            deviceEnumerator = (IMMDeviceEnumerator)(object)new MMDeviceEnumeratorComObject();
-            Marshal.ThrowExceptionForHR(deviceEnumerator.EnumAudioEndpoints(
+            Guid classId = MMDeviceEnumeratorClassId;
+            Guid interfaceId = MMDeviceEnumeratorId;
+            Marshal.ThrowExceptionForHR(CoCreateInstance(
+                ref classId,
+                0,
+                ClassContextAll,
+                ref interfaceId,
+                out deviceEnumerator));
+            Marshal.ThrowExceptionForHR(EnumAudioEndpoints(
+                deviceEnumerator,
                 RenderDataFlow,
                 ActiveDeviceState,
                 out devices));
-            Marshal.ThrowExceptionForHR(devices.GetCount(out uint deviceCount));
+            Marshal.ThrowExceptionForHR(GetCollectionCount(devices, out uint deviceCount));
 
             for (uint deviceIndex = 0; deviceIndex < deviceCount; deviceIndex++)
             {
-                IMMDevice? device = null;
-                object? managerObject = null;
-                IAudioSessionEnumerator? sessions = null;
+                nint device = 0;
+                nint manager = 0;
+                nint sessions = 0;
                 try
                 {
-                    Marshal.ThrowExceptionForHR(devices.Item(deviceIndex, out device));
-                    Guid managerId = AudioSessionManager2Id;
-                    Marshal.ThrowExceptionForHR(device.Activate(
-                        ref managerId,
+                    Marshal.ThrowExceptionForHR(GetCollectionItem(
+                        devices,
+                        deviceIndex,
+                        out device));
+                    Marshal.ThrowExceptionForHR(Activate(
+                        device,
+                        AudioSessionManager2Id,
                         ClassContextAll,
-                        IntPtr.Zero,
-                        out managerObject));
-                    var manager = (IAudioSessionManager2)managerObject;
-                    Marshal.ThrowExceptionForHR(manager.GetSessionEnumerator(out sessions));
-                    Marshal.ThrowExceptionForHR(sessions.GetCount(out int sessionCount));
+                        out manager));
+                    Marshal.ThrowExceptionForHR(GetSessionEnumerator(manager, out sessions));
+                    Marshal.ThrowExceptionForHR(GetSessionCount(sessions, out int sessionCount));
 
                     for (int sessionIndex = 0; sessionIndex < sessionCount; sessionIndex++)
                         ApplyToSession(sessions, sessionIndex, processIds);
@@ -129,7 +144,7 @@ internal static class WindowsAudioSessionConsolidator
                 finally
                 {
                     Release(sessions);
-                    Release(managerObject);
+                    Release(manager);
                     Release(device);
                 }
             }
@@ -142,153 +157,155 @@ internal static class WindowsAudioSessionConsolidator
     }
 
     private static void ApplyToSession(
-        IAudioSessionEnumerator sessions,
+        nint sessions,
         int sessionIndex,
         IReadOnlySet<uint> processIds)
     {
-        IAudioSessionControl? control = null;
+        nint control = 0;
+        nint control2 = 0;
         try
         {
-            Marshal.ThrowExceptionForHR(sessions.GetSession(sessionIndex, out control));
-            var control2 = (IAudioSessionControl2)control;
-            int processIdHr = control2.GetProcessId(out uint processId);
+            Marshal.ThrowExceptionForHR(GetSession(sessions, sessionIndex, out control));
+            Marshal.ThrowExceptionForHR(QueryInterface(
+                control,
+                AudioSessionControl2Id,
+                out control2));
+
+            int processIdHr = GetProcessId(control2, out uint processId);
             if (processIdHr < 0 || !processIds.Contains(processId)) return;
 
-            Guid eventContext = EventContext;
-            Marshal.ThrowExceptionForHR(control2.SetDisplayName(DisplayName, ref eventContext));
-
-            Guid groupingId = GroupingId;
-            eventContext = EventContext;
-            Marshal.ThrowExceptionForHR(control2.SetGroupingParam(ref groupingId, ref eventContext));
+            Marshal.ThrowExceptionForHR(SetDisplayName(control2, DisplayName, EventContext));
+            Marshal.ThrowExceptionForHR(SetGroupingParam(control2, GroupingId, EventContext));
         }
         finally
         {
+            Release(control2);
             Release(control);
         }
     }
 
-    private static void Release(object? value)
+    private static int EnumAudioEndpoints(
+        nint deviceEnumerator,
+        int dataFlow,
+        uint stateMask,
+        out nint devices)
     {
-        if (value is null || !Marshal.IsComObject(value)) return;
-        try { _ = Marshal.FinalReleaseComObject(value); } catch { }
+        nint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, int, uint, nint*, int>)
+            GetMethod(deviceEnumerator, 3);
+        int hr = method(deviceEnumerator, dataFlow, stateMask, &result);
+        devices = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
-    private sealed class MMDeviceEnumeratorComObject;
-
-    [ComImport]
-    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceEnumerator
+    private static int GetCollectionCount(nint devices, out uint count)
     {
-        [PreserveSig] int EnumAudioEndpoints(
-            int dataFlow,
-            uint stateMask,
-            out IMMDeviceCollection devices);
-        [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice device);
-        [PreserveSig] int GetDevice([MarshalAs(UnmanagedType.LPWStr)] string id, out IMMDevice device);
-        [PreserveSig] int RegisterEndpointNotificationCallback(IntPtr client);
-        [PreserveSig] int UnregisterEndpointNotificationCallback(IntPtr client);
+        uint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, uint*, int>)GetMethod(devices, 3);
+        int hr = method(devices, &result);
+        count = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDeviceCollection
+    private static int GetCollectionItem(nint devices, uint index, out nint device)
     {
-        [PreserveSig] int GetCount(out uint count);
-        [PreserveSig] int Item(uint index, out IMMDevice device);
+        nint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)
+            GetMethod(devices, 4);
+        int hr = method(devices, index, &result);
+        device = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IMMDevice
+    private static int Activate(
+        nint device,
+        Guid interfaceId,
+        uint classContext,
+        out nint instance)
     {
-        [PreserveSig] int Activate(
-            ref Guid interfaceId,
-            uint classContext,
-            IntPtr activationParameters,
-            [MarshalAs(UnmanagedType.IUnknown)] out object activatedInterface);
-        [PreserveSig] int OpenPropertyStore(uint access, out IntPtr properties);
-        [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
-        [PreserveSig] int GetState(out uint state);
+        nint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, Guid*, uint, nint, nint*, int>)
+            GetMethod(device, 3);
+        int hr = method(device, &interfaceId, classContext, 0, &result);
+        instance = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionManager2
+    private static int GetSessionEnumerator(nint manager, out nint sessions)
     {
-        [PreserveSig] int GetAudioSessionControl(
-            ref Guid sessionId,
-            uint streamFlags,
-            out IAudioSessionControl sessionControl);
-        [PreserveSig] int GetSimpleAudioVolume(
-            ref Guid sessionId,
-            uint streamFlags,
-            out IntPtr audioVolume);
-        [PreserveSig] int GetSessionEnumerator(out IAudioSessionEnumerator sessionEnumerator);
-        [PreserveSig] int RegisterSessionNotification(IntPtr notification);
-        [PreserveSig] int UnregisterSessionNotification(IntPtr notification);
-        [PreserveSig] int RegisterDuckNotification(
-            [MarshalAs(UnmanagedType.LPWStr)] string sessionId,
-            IntPtr notification);
-        [PreserveSig] int UnregisterDuckNotification(IntPtr notification);
+        nint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, nint*, int>)GetMethod(manager, 5);
+        int hr = method(manager, &result);
+        sessions = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("E2F5BB11-0570-40CA-ACDD-3AA01277DEE8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionEnumerator
+    private static int GetSessionCount(nint sessions, out int count)
     {
-        [PreserveSig] int GetCount(out int sessionCount);
-        [PreserveSig] int GetSession(int sessionIndex, out IAudioSessionControl sessionControl);
+        int result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, int*, int>)GetMethod(sessions, 3);
+        int hr = method(sessions, &result);
+        count = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("F4B1A599-7266-4319-A8CA-E70ACB11E8CD")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionControl
+    private static int GetSession(nint sessions, int index, out nint control)
     {
-        [PreserveSig] int GetState(out int state);
-        [PreserveSig] int GetDisplayName(out IntPtr displayName);
-        [PreserveSig] int SetDisplayName(
-            [MarshalAs(UnmanagedType.LPWStr)] string displayName,
-            ref Guid eventContext);
-        [PreserveSig] int GetIconPath(out IntPtr iconPath);
-        [PreserveSig] int SetIconPath(
-            [MarshalAs(UnmanagedType.LPWStr)] string iconPath,
-            ref Guid eventContext);
-        [PreserveSig] int GetGroupingParam(out Guid groupingId);
-        [PreserveSig] int SetGroupingParam(ref Guid groupingId, ref Guid eventContext);
-        [PreserveSig] int RegisterAudioSessionNotification(IntPtr notification);
-        [PreserveSig] int UnregisterAudioSessionNotification(IntPtr notification);
+        nint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, int, nint*, int>)GetMethod(sessions, 4);
+        int hr = method(sessions, index, &result);
+        control = result;
+        return hr;
     }
 
-    [ComImport]
-    [Guid("BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IAudioSessionControl2
+    private static int QueryInterface(nint instance, Guid interfaceId, out nint result)
     {
-        [PreserveSig] int GetState(out int state);
-        [PreserveSig] int GetDisplayName(out IntPtr displayName);
-        [PreserveSig] int SetDisplayName(
-            [MarshalAs(UnmanagedType.LPWStr)] string displayName,
-            ref Guid eventContext);
-        [PreserveSig] int GetIconPath(out IntPtr iconPath);
-        [PreserveSig] int SetIconPath(
-            [MarshalAs(UnmanagedType.LPWStr)] string iconPath,
-            ref Guid eventContext);
-        [PreserveSig] int GetGroupingParam(out Guid groupingId);
-        [PreserveSig] int SetGroupingParam(ref Guid groupingId, ref Guid eventContext);
-        [PreserveSig] int RegisterAudioSessionNotification(IntPtr notification);
-        [PreserveSig] int UnregisterAudioSessionNotification(IntPtr notification);
-        [PreserveSig] int GetSessionIdentifier(out IntPtr sessionId);
-        [PreserveSig] int GetSessionInstanceIdentifier(out IntPtr sessionInstanceId);
-        [PreserveSig] int GetProcessId(out uint processId);
-        [PreserveSig] int IsSystemSoundsSession();
-        [PreserveSig] int SetDuckingPreference([MarshalAs(UnmanagedType.Bool)] bool optOut);
+        nint value = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, Guid*, nint*, int>)
+            GetMethod(instance, 0);
+        int hr = method(instance, &interfaceId, &value);
+        result = value;
+        return hr;
     }
+
+    private static int GetProcessId(nint control, out uint processId)
+    {
+        uint result = 0;
+        var method = (delegate* unmanaged[Stdcall]<nint, uint*, int>)GetMethod(control, 14);
+        int hr = method(control, &result);
+        processId = result;
+        return hr;
+    }
+
+    private static int SetDisplayName(nint control, string displayName, Guid eventContext)
+    {
+        var method = (delegate* unmanaged[Stdcall]<nint, char*, Guid*, int>)
+            GetMethod(control, 5);
+        fixed (char* displayNamePointer = displayName)
+            return method(control, displayNamePointer, &eventContext);
+    }
+
+    private static int SetGroupingParam(nint control, Guid groupingId, Guid eventContext)
+    {
+        var method = (delegate* unmanaged[Stdcall]<nint, Guid*, Guid*, int>)
+            GetMethod(control, 9);
+        return method(control, &groupingId, &eventContext);
+    }
+
+    private static nint GetMethod(nint instance, int slot) => (*(nint**)instance)[slot];
+
+    private static void Release(nint instance)
+    {
+        if (instance == 0) return;
+        var method = (delegate* unmanaged[Stdcall]<nint, uint>)GetMethod(instance, 2);
+        _ = method(instance);
+    }
+
+    [DllImport("ole32.dll", ExactSpelling = true)]
+    private static extern int CoCreateInstance(
+        ref Guid classId,
+        nint outer,
+        uint classContext,
+        ref Guid interfaceId,
+        out nint instance);
 }
