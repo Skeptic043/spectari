@@ -183,6 +183,7 @@ public sealed class MainForm : Form
     private readonly HostAccessService _hostAccess;
     private readonly ShareLinkResolver _shareLinks;
     private readonly StreamController _streamController;
+    private readonly CaptureDeviceChangeMonitor _captureDeviceChanges;
     private WatchForm? _watchForm;
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
@@ -403,6 +404,8 @@ public sealed class MainForm : Form
             AppendLog));
         _streamController.StateChanged += RenderStreamState;
         _streamController.SessionStarted += RenderStartedStream;
+        _captureDeviceChanges = new CaptureDeviceChangeMonitor();
+        _captureDeviceChanges.DevicesChanged += RefreshCaptureDevicesFromNotification;
 
         // Nothing gets disabled - the selected radio decides which combo is USED.
         _windowCombo.DropDown += (_, _) => PopulateWindows();
@@ -506,6 +509,7 @@ public sealed class MainForm : Form
         FormClosing += (_, _) =>
         {
             _closing = true;
+            _captureDeviceChanges.Dispose();
             _updateCheckCts.Cancel();
             _updateCheckCts.Dispose();
             // Drop the static-event subscription first so this recreated-then-
@@ -857,7 +861,6 @@ public sealed class MainForm : Form
         PopulateWindows();
         PopulateMonitors();
         PopulateCaptureDevices();
-        RenderMainCaptureDeviceRow();
     }
 
     private void RenderMainCaptureDeviceRow()
@@ -902,6 +905,19 @@ public sealed class MainForm : Form
             _captureDeviceCombo,
             _sourceSelection.CaptureDeviceDisplayItems,
             _sourceSelection.SelectedCaptureDeviceIndex);
+        RenderMainCaptureDeviceRow();
+    }
+
+    private void RefreshCaptureDevicesFromNotification(
+        IReadOnlyList<CaptureDeviceDescription> devices)
+    {
+        if (_closing || IsDisposed || Disposing) return;
+        _sourceSelection.RefreshCaptureDevices(devices);
+        RenderPicker(
+            _captureDeviceCombo,
+            _sourceSelection.CaptureDeviceDisplayItems,
+            _sourceSelection.SelectedCaptureDeviceIndex);
+        RenderMainCaptureDeviceRow();
     }
 
     private static void RenderSourcePickers(
@@ -1126,9 +1142,6 @@ public sealed class MainForm : Form
         var encoderCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
         var audioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
 
-        if (!showCaptureDeviceRow)
-            dlg.ClientSize = new Size(480, SwitchDialogExpandedHeight - PickerRowHeight(captureDeviceCombo));
-
         RenderSourcePickers(dialogSources, winCombo, monCombo, captureDeviceCombo, audioCombo);
         foreach (object it in _presetCombo.Items) presetCombo.Items.Add(it);
         foreach (object it in _encoderCombo.Items) encoderCombo.Items.Add(it);
@@ -1204,21 +1217,22 @@ public sealed class MainForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = showCaptureDeviceRow ? 8 : 7,
+            RowCount = 8,
             Padding = new Padding(10),
         };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int index = 0; index < 7; index++)
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         int row = 0;
         grid.Controls.Add(rbWin, 0, row);
         grid.Controls.Add(winCombo, 1, row++);
         grid.Controls.Add(rbMon, 0, row);
         grid.Controls.Add(monCombo, 1, row++);
-        if (showCaptureDeviceRow)
-        {
-            grid.Controls.Add(rbCaptureDevice, 0, row);
-            grid.Controls.Add(captureDeviceCombo, 1, row++);
-        }
+        int captureDeviceRow = row;
+        grid.Controls.Add(rbCaptureDevice, 0, row);
+        grid.Controls.Add(captureDeviceCombo, 1, row++);
         grid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
         grid.Controls.Add(audioCombo, 1, row++);
         grid.Controls.Add(new Label { Text = "Preset:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
@@ -1241,6 +1255,37 @@ public sealed class MainForm : Form
         ApplyDarkTheme(dlg);
         ok.BackColor = AccentDark;
 
+        void RenderDialogCaptureDeviceRow()
+        {
+            bool visible = dialogSources.CaptureDevices.Count > 0;
+            grid.SuspendLayout();
+            rbCaptureDevice.Visible = visible;
+            captureDeviceCombo.Visible = visible;
+            RowStyle rowStyle = grid.RowStyles[captureDeviceRow];
+            rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
+            rowStyle.Height = 0;
+            if (visible && dialogSources.Kind == SourceKind.CaptureDevice)
+                rbCaptureDevice.Checked = true;
+            dlg.ClientSize = new Size(
+                480,
+                SwitchDialogExpandedHeight - (visible ? 0 : PickerRowHeight(captureDeviceCombo)));
+            grid.ResumeLayout(performLayout: true);
+        }
+
+        void RefreshDialogCaptureDevices(IReadOnlyList<CaptureDeviceDescription> devices)
+        {
+            if (dlg.IsDisposed || dlg.Disposing) return;
+            dialogSources.RefreshCaptureDevices(devices);
+            RenderPicker(
+                captureDeviceCombo,
+                dialogSources.CaptureDeviceDisplayItems,
+                dialogSources.SelectedCaptureDeviceIndex);
+            RenderDialogCaptureDeviceRow();
+            RefreshDlgSourceOptions();
+        }
+
+        RenderDialogCaptureDeviceRow();
+
         var completion = new TaskCompletionSource<DialogResult>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         void Complete(DialogResult result)
@@ -1256,10 +1301,19 @@ public sealed class MainForm : Form
             Complete(DialogResult.Cancel);
         };
 
-        this.Enabled = false;
-        dlg.Show(this);
-        DialogResult result = await completion.Task;
-        this.Enabled = true;
+        DialogResult result;
+        _captureDeviceChanges.DevicesChanged += RefreshDialogCaptureDevices;
+        try
+        {
+            this.Enabled = false;
+            dlg.Show(this);
+            result = await completion.Task;
+        }
+        finally
+        {
+            _captureDeviceChanges.DevicesChanged -= RefreshDialogCaptureDevices;
+            this.Enabled = true;
+        }
         if (result != DialogResult.OK) return;
 
         // The dialog has only held descriptions so far. Release any idle capture

@@ -195,10 +195,12 @@ internal sealed class SourceSelectionModel
             _selectedMonitorDeviceName = _monitors.Count > 0 ? _monitors[0].DeviceName : null;
     }
 
-    internal void RefreshCaptureDevices()
+    internal void RefreshCaptureDevices() => RefreshCaptureDevices(_enumerateCaptureDevices());
+
+    internal void RefreshCaptureDevices(IEnumerable<CaptureDeviceDescription> devices)
     {
         IReadOnlyList<CaptureDeviceDisplayItem> items =
-            CaptureDevicePolicy.PrepareDisplayItems(_enumerateCaptureDevices());
+            CaptureDevicePolicy.PrepareDisplayItems(devices);
         _captureDevices = items.Select(item => item.Device).ToList();
         _captureDeviceDisplayItems = items.Select(item => item.DisplayName).ToList();
         if (SelectedCaptureDeviceIndex < 0)
