@@ -88,7 +88,7 @@ public sealed class MainForm : Form
         public int PresetHeight { get; set; } = 1080;
         public int PresetFps { get; set; } = 60;
         public string BitrateTier { get; set; } = "med"; // "low" | "med" | "high"
-        public string AudioSource { get; set; } = "window"; // "none" | "window" | process name
+        public string AudioSource { get; set; } = "window"; // reserved mode key or process name
         public int Port { get; set; } = 8093;
         public string StreamName { get; set; } = ""; // shown to viewers; empty = machine name
         public string Encoder { get; set; } = "auto";
@@ -956,11 +956,11 @@ public sealed class MainForm : Form
     {
         var preset = (Preset)_presetCombo.SelectedItem!;
 
-        // Resolve the audio source: none / follow captured window / a specific app.
+        // Resolve the audio source: none / follow captured window / desktop / a specific app.
         // "Captured window's audio" during a monitor share resolves to no audio.
         uint audioPid = _sourceSelection.SelectedAudioPid;
         string audioKey = _sourceSelection.AudioKey;
-        if (audioKey is not (SourceSelectionModel.NoAudioKey or SourceSelectionModel.CapturedWindowAudioKey) && audioPid == 0)
+        if (_sourceSelection.IsSelectedAudioProcessUnavailable)
             AppendLog($"[audio] '{audioKey}' is not running; streaming without audio");
 
         IntPtr windowHandle = IntPtr.Zero, monitorHandle = IntPtr.Zero;
@@ -1005,6 +1005,7 @@ public sealed class MainForm : Form
             SourceName = sourceName,
             StreamName = _nameInput.Text.Trim(),
             AudioPid = audioPid,
+            CaptureDesktopAudio = _sourceSelection.IsDesktopAudioSelected,
             Fps = preset.Fps,
             BitrateKbps = (_bitrateCombo.SelectedItem as BitrateChoice)?.Kbps ?? 0, // 0 = session auto (Medium)
             OutHeight = preset.Height,

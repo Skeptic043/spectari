@@ -3,25 +3,28 @@ using System.IO.Pipes;
 
 namespace Spectari.Audio;
 
-/// <summary>Owns process-audio startup, fallback, and teardown for one stream.</summary>
+/// <summary>Owns audio startup, fallback, and teardown for one stream.</summary>
 internal sealed class AudioPipeline : IDisposable
 {
     private readonly uint _audioPid;
+    private readonly bool _captureDesktopAudio;
     private readonly NamedPipeServerStream _pipe;
     private readonly CancellationTokenSource _cts = new();
 
     // Capture is created asynchronously after ffmpeg connects. The gate makes
     // disposal either find the instance or prevent it from being created.
     private readonly Lock _audioGate = new();
-    private ProcessAudioCapture? _audioCapture;
+    private IDisposable? _audioCapture;
     private CancellationTokenRegistration _sessionCancellation;
     private int _disposed;
 
-    internal AudioPipeline(uint audioPid, int port)
+    internal AudioPipeline(uint audioPid, bool captureDesktopAudio, int port)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(audioPid);
+        if ((audioPid != 0) == captureDesktopAudio)
+            throw new ArgumentException("Exactly one audio capture mode must be selected.");
 
         _audioPid = audioPid;
+        _captureDesktopAudio = captureDesktopAudio;
         PipeName = FormatPipeName(port);
         _pipe = new NamedPipeServerStream(PipeName, PipeDirection.Out, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -29,8 +32,10 @@ internal sealed class AudioPipeline : IDisposable
 
     internal string PipeName { get; }
 
-    internal static AudioPipeline? Create(uint audioPid, int port) =>
-        audioPid == 0 ? null : new AudioPipeline(audioPid, port);
+    internal static AudioPipeline? Create(uint audioPid, bool captureDesktopAudio, int port) =>
+        audioPid == 0 && !captureDesktopAudio
+            ? null
+            : new AudioPipeline(audioPid, captureDesktopAudio, port);
 
     internal static string FormatPipeName(int port) => $"spectari_audio_{port}";
 
@@ -69,14 +74,22 @@ internal sealed class AudioPipeline : IDisposable
             {
                 // Cancellation inside the gate prevents creation after disposal.
                 if (ct.IsCancellationRequested) return;
-                _audioCapture = new ProcessAudioCapture(_audioPid, videoEpochTicks, WriteToPipe);
+                _audioCapture = _captureDesktopAudio
+                    ? new DesktopAudioCapture(videoEpochTicks, WriteToPipe)
+                    : new ProcessAudioCapture(_audioPid, videoEpochTicks, WriteToPipe);
             }
-            Console.WriteLine($"[audio] capturing audio from process {_audioPid}");
+            if (_captureDesktopAudio)
+                Console.WriteLine("[audio] desktop audio follows the default output device");
+            else
+                Console.WriteLine($"[audio] capturing audio from process {_audioPid}");
         }
         catch (Exception ex)
         {
             if (ct.IsCancellationRequested) return;
-            Console.Error.WriteLine($"[audio] process loopback failed ({ex.Message}); feeding silence instead.");
+            if (_captureDesktopAudio)
+                Console.Error.WriteLine($"[audio] desktop loopback failed ({ex.Message}); feeding silence instead.");
+            else
+                Console.Error.WriteLine($"[audio] process loopback failed ({ex.Message}); feeding silence instead.");
             var silence = new byte[ProcessAudioCapture.SampleRate * ProcessAudioCapture.Channels * 4 / 100];
             long fallbackStartTicks = Stopwatch.GetTimestamp();
             long leadInFrames = ProcessAudioCapture.GetLeadInFrames(videoEpochTicks, fallbackStartTicks);
