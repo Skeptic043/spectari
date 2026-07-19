@@ -205,6 +205,8 @@ internal sealed class SourceSelectionModel
         _captureDeviceDisplayItems = items.Select(item => item.DisplayName).ToList();
         if (SelectedCaptureDeviceIndex < 0)
         {
+            if (Kind == SourceKind.CaptureDevice)
+                Kind = SourceKind.Monitor;
             _selectedCaptureDeviceSymbolicLink = _captureDevices.Count > 0
                 ? _captureDevices[0].SymbolicLink
                 : null;
@@ -233,7 +235,11 @@ internal sealed class SourceSelectionModel
         };
         if (snapshot.SelectedWindowIndex < 0) snapshot._selectedWindowHandle = null;
         if (snapshot.SelectedMonitorIndex < 0) snapshot._selectedMonitorDeviceName = null;
-        if (snapshot.SelectedCaptureDeviceIndex < 0) snapshot._selectedCaptureDeviceSymbolicLink = null;
+        if (snapshot.SelectedCaptureDeviceIndex < 0)
+        {
+            snapshot._selectedCaptureDeviceSymbolicLink = null;
+            if (snapshot.Kind == SourceKind.CaptureDevice) snapshot.Kind = SourceKind.Monitor;
+        }
         snapshot.NormalizeAudioSelection();
         return snapshot;
     }

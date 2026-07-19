@@ -17,6 +17,7 @@ internal static unsafe class MediaFoundationInterop
     internal static readonly Guid MfDevSourceAttributeSourceTypeVidcapGuid = new("8AC3587A-4AE7-42D8-99E0-0A6013EEF90F");
     internal static readonly Guid MfDevSourceAttributeSourceTypeVidcapSymbolicLink = new("58F0AAD8-22BF-4F8A-BB3D-D2C4978C6E2F");
     internal static readonly Guid MfDevSourceAttributeFriendlyName = new("60D0E559-52F8-4FA2-BBCE-ACDB34A8EC01");
+    internal static readonly Guid MfSourceReaderAsyncCallback = new("1E3DBEAC-BB43-4C35-B507-CD644464C965");
     internal static readonly Guid MfSourceReaderEnableVideoProcessing = new("FB394F3D-CCF1-42EE-BBB3-F9B845D5681D");
     internal static readonly Guid MfMtMajorType = new("48EBA18E-F8C9-4687-BF11-0A74C9F96A8F");
     internal static readonly Guid MfMtSubtype = new("F7E34C9A-42E8-4714-B74B-CB29D72C35E5");
@@ -29,6 +30,7 @@ internal static unsafe class MediaFoundationInterop
     internal static readonly Guid MfVideoFormatNv12 = new("3231564E-0000-0010-8000-00AA00389B71");
     internal static readonly Guid MfVideoFormatYuy2 = new("32595559-0000-0010-8000-00AA00389B71");
     internal static readonly Guid IidSourceReaderEx = new("7B981CF0-560E-4116-9875-B099895F23D7");
+    internal static readonly Guid IidSourceReaderCallback = new("DEEC8D99-FA1D-4D82-84C2-2C8969944867");
     internal static readonly Guid Iid2DBuffer = new("7DC9D5F9-9ED9-44EC-9BBF-0600BB589FBB");
 
     [DllImport("ole32.dll", ExactSpelling = true)]
@@ -181,6 +183,16 @@ internal static unsafe class MediaFoundationInterop
         }
     }
 
+    internal static void SetUnknown(nint attributes, in Guid key, nint value)
+    {
+        Guid localKey = key;
+        int hr = ((delegate* unmanaged[Stdcall]<nint, Guid*, nint, int>)Method(attributes, 27))(
+            attributes,
+            &localKey,
+            value);
+        ThrowIfFailed(hr, "Media Foundation attribute write");
+    }
+
     internal static int GetNativeMediaType(nint sourceReader, uint stream, uint index, out nint mediaType)
     {
         mediaType = 0;
@@ -213,33 +225,15 @@ internal static unsafe class MediaFoundationInterop
             0,
             mediaType);
 
-    internal static int ReadSample(
-        nint sourceReader,
-        uint stream,
-        out uint actualStream,
-        out uint flags,
-        out long timestamp,
-        out nint sample)
-    {
-        actualStream = 0;
-        flags = 0;
-        timestamp = 0;
-        sample = 0;
-        fixed (uint* actualStreamPointer = &actualStream)
-        fixed (uint* flagsPointer = &flags)
-        fixed (long* timestampPointer = &timestamp)
-        fixed (nint* samplePointer = &sample)
-        {
-            return ((delegate* unmanaged[Stdcall]<nint, uint, uint, uint*, uint*, long*, nint*, int>)Method(sourceReader, 9))(
-                sourceReader,
-                stream,
-                0,
-                actualStreamPointer,
-                flagsPointer,
-                timestampPointer,
-                samplePointer);
-        }
-    }
+    internal static int ReadSampleAsync(nint sourceReader, uint stream) =>
+        ((delegate* unmanaged[Stdcall]<nint, uint, uint, nint, nint, nint, nint, int>)Method(sourceReader, 9))(
+            sourceReader,
+            stream,
+            0,
+            0,
+            0,
+            0,
+            0);
 
     internal static int Flush(nint sourceReader, uint stream) =>
         ((delegate* unmanaged[Stdcall]<nint, uint, int>)Method(sourceReader, 10))(sourceReader, stream);
