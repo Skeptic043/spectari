@@ -783,7 +783,10 @@ public sealed class MainForm : Form
             case IdlePreviewPollState.Unavailable:
                 _previewPollTimer.Stop();
                 _idlePreviewCapture.Stop();
-                SetPreviewPlaceholder("Source is closed or unavailable.");
+                SetPreviewPlaceholder(
+                    _sourceSelection.Kind == SourceKind.CaptureDevice
+                        ? "Capture device unavailable."
+                        : "Source is closed or unavailable.");
                 break;
         }
     }
@@ -913,6 +916,7 @@ public sealed class MainForm : Form
     {
         if (_closing || IsDisposed || Disposing) return;
         _sourceSelection.RefreshCaptureDevices(devices);
+        RenderMainSourceKind();
         RenderPicker(
             _captureDeviceCombo,
             _sourceSelection.CaptureDeviceDisplayItems,
@@ -934,6 +938,13 @@ public sealed class MainForm : Form
             sourceSelection.CaptureDeviceDisplayItems,
             sourceSelection.SelectedCaptureDeviceIndex);
         RenderAudioPicker(sourceSelection, audioCombo);
+    }
+
+    private void RenderMainSourceKind()
+    {
+        _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
+        _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
+        _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
     }
 
     private static void RenderAudioPicker(SourceSelectionModel sourceSelection, ComboBox audioCombo) =>
@@ -1258,14 +1269,15 @@ public sealed class MainForm : Form
         void RenderDialogCaptureDeviceRow()
         {
             bool visible = dialogSources.CaptureDevices.Count > 0;
+            rbWin.Checked = dialogSources.Kind == SourceKind.Window;
+            rbMon.Checked = dialogSources.Kind == SourceKind.Monitor;
+            rbCaptureDevice.Checked = visible && dialogSources.Kind == SourceKind.CaptureDevice;
             grid.SuspendLayout();
             rbCaptureDevice.Visible = visible;
             captureDeviceCombo.Visible = visible;
             RowStyle rowStyle = grid.RowStyles[captureDeviceRow];
             rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
             rowStyle.Height = 0;
-            if (visible && dialogSources.Kind == SourceKind.CaptureDevice)
-                rbCaptureDevice.Checked = true;
             dlg.ClientSize = new Size(
                 480,
                 SwitchDialogExpandedHeight - (visible ? 0 : PickerRowHeight(captureDeviceCombo)));
@@ -1353,9 +1365,7 @@ public sealed class MainForm : Form
             return;
         }
 
-        _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
-        _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
-        _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
+        RenderMainSourceKind();
         RenderSourcePickers(
             _sourceSelection,
             _windowCombo,
@@ -2102,9 +2112,7 @@ public sealed class MainForm : Form
             _persistedCaptureDeviceSymbolicLink = s.CaptureDeviceSymbolicLink ?? "";
             _sourceSelection.SelectCaptureDevice(_persistedCaptureDeviceSymbolicLink);
             _sourceSelection.SelectAudioKey(s.AudioSource);
-            _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
-            _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
-            _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
+            RenderMainSourceKind();
             RenderSourcePickers(
                 _sourceSelection,
                 _windowCombo,

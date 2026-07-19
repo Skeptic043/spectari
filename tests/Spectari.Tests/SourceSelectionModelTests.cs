@@ -67,6 +67,73 @@ public sealed class SourceSelectionModelTests
     }
 
     [Fact]
+    public void RefreshFallsBackToMonitorWhenSelectedCaptureDeviceDisappears()
+    {
+        List<CaptureDeviceDescription> devices =
+        [
+            Device("device-a", "Alpha"),
+            Device("device-b", "Bravo"),
+        ];
+        var model = Model(() => [], () => [Monitor(10, "DISPLAY-A")], () => devices);
+        model.RefreshAll();
+        model.SelectKind(SourceKind.CaptureDevice);
+        model.SelectCaptureDeviceIndex(1);
+
+        devices = [Device("device-a", "Alpha")];
+        model.RefreshCaptureDevices();
+
+        Assert.Equal(SourceKind.Monitor, model.Kind);
+        Assert.Equal("device-a", model.SelectedCaptureDevice?.SymbolicLink);
+        Assert.Equal("DISPLAY-A", model.SelectedMonitor?.DeviceName);
+    }
+
+    [Fact]
+    public void RefreshKeepsMonitorSelectedWhenCaptureDevicesChange()
+    {
+        List<CaptureDeviceDescription> devices = [Device("device-a", "Alpha")];
+        var model = Model(() => [], () => [Monitor(10, "DISPLAY-A")], () => devices);
+        model.RefreshAll();
+        model.SelectKind(SourceKind.Monitor);
+
+        devices = [];
+        model.RefreshCaptureDevices();
+
+        Assert.Equal(SourceKind.Monitor, model.Kind);
+        Assert.Null(model.SelectedCaptureDevice);
+    }
+
+    [Fact]
+    public void RefreshFallsBackToMonitorWhenLastCaptureDeviceDisappears()
+    {
+        List<CaptureDeviceDescription> devices = [Device("device-a", "Alpha")];
+        var model = Model(() => [], () => [Monitor(10, "DISPLAY-A")], () => devices);
+        model.RefreshAll();
+        model.SelectKind(SourceKind.CaptureDevice);
+
+        devices = [];
+        model.RefreshCaptureDevices();
+
+        Assert.Equal(SourceKind.Monitor, model.Kind);
+        Assert.Null(model.SelectedCaptureDevice);
+        Assert.Equal("DISPLAY-A", model.SelectedMonitor?.DeviceName);
+    }
+
+    [Fact]
+    public void FreshSnapshotFallsBackWhenSelectedCaptureDeviceDisappeared()
+    {
+        List<CaptureDeviceDescription> devices = [Device("device-a", "Alpha")];
+        var model = Model(() => [], () => [Monitor(10, "DISPLAY-A")], () => devices);
+        model.RefreshAll();
+        model.SelectKind(SourceKind.CaptureDevice);
+
+        devices = [];
+        SourceSelectionModel snapshot = model.CreateFreshSnapshot();
+
+        Assert.Equal(SourceKind.Monitor, snapshot.Kind);
+        Assert.Null(snapshot.SelectedCaptureDevice);
+    }
+
+    [Fact]
     public void FormatsPickerAndAudioDisplayStrings()
     {
         var window = Window(1, "game", 11, "Game title");

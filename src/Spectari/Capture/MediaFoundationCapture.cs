@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
 namespace Spectari.Capture;
@@ -13,10 +14,13 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
     private readonly object _readerGate = new();
     private readonly object _frameGate = new();
     private readonly ManualResetEventSlim _initialized = new(false);
+    private readonly ManualResetEventSlim _stopRequested = new(false);
+    private readonly ManualResetEventSlim _flushCompleted = new(false);
     private readonly AutoResetEvent _frameSignal = new(false);
     private readonly Thread _worker;
     private nint _mediaSource;
     private nint _sourceReader;
+    private SourceReaderCallback? _readerCallback;
     private byte[]? _latestFrame;
     private Exception? _initializationError;
     private Exception? _captureError;
@@ -117,8 +121,10 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
             mediaFoundationStarted = true;
 
             InitializeSourceReader();
+            RequestNextFrame();
             _initialized.Set();
-            ReadFrames();
+            _stopRequested.Wait();
+            FlushSourceReader();
         }
         catch (Exception ex)
         {
@@ -144,6 +150,7 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
         nint readerAttributes = 0;
         nint mediaSource = 0;
         nint sourceReader = 0;
+        SourceReaderCallback? readerCallback = null;
         try
         {
             MediaFoundationInterop.ThrowIfFailed(
@@ -166,8 +173,13 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
             }
 
             MediaFoundationInterop.ThrowIfFailed(
-                MediaFoundationInterop.MFCreateAttributes(out readerAttributes, 1),
+                MediaFoundationInterop.MFCreateAttributes(out readerAttributes, 2),
                 "Capture device reader setup");
+            readerCallback = new SourceReaderCallback(this);
+            MediaFoundationInterop.SetUnknown(
+                readerAttributes,
+                MediaFoundationInterop.MfSourceReaderAsyncCallback,
+                readerCallback.Pointer);
             MediaFoundationInterop.SetUInt32(
                 readerAttributes,
                 MediaFoundationInterop.MfSourceReaderEnableVideoProcessing,
@@ -184,12 +196,15 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
             {
                 _mediaSource = mediaSource;
                 _sourceReader = sourceReader;
+                _readerCallback = readerCallback;
                 mediaSource = 0;
                 sourceReader = 0;
+                readerCallback = null;
             }
         }
         finally
         {
+            readerCallback?.Dispose();
             MediaFoundationInterop.Release(ref sourceReader);
             if (mediaSource != 0)
             {
@@ -363,44 +378,48 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
             denominator);
     }
 
-    private void ReadFrames()
+    private void RequestNextFrame()
     {
-        while (Volatile.Read(ref _disposed) == 0)
+        lock (_readerGate)
         {
-            nint sourceReader;
-            lock (_readerGate) sourceReader = _sourceReader;
-            if (sourceReader == 0) return;
-
-            _readStage = "reading-device";
-            Interlocked.Increment(ref _readsStarted);
-            Interlocked.Exchange(ref _lastReadStartedTicks, Stopwatch.GetTimestamp());
-            int hr = MediaFoundationInterop.ReadSample(
-                sourceReader,
-                MediaFoundationInterop.FirstVideoStream,
-                out _,
-                out uint flags,
-                out _,
-                out nint sample);
-            _readStage = "idle";
-            if (Volatile.Read(ref _disposed) != 0)
+            if (_sourceReader == 0 ||
+                Volatile.Read(ref _disposed) != 0 ||
+                Volatile.Read(ref _captureError) is not null)
             {
-                MediaFoundationInterop.Release(ref sample);
                 return;
             }
-            try
-            {
-                MediaFoundationInterop.ThrowIfFailed(hr, "Capture device frame read");
-                if ((flags & MediaFoundationInterop.SourceReaderError) != 0)
-                    throw new InvalidOperationException("The capture device reported a frame read error.");
-                if ((flags & MediaFoundationInterop.SourceReaderEndOfStream) != 0)
-                    throw new CaptureTargetUnavailableException("The capture device stopped delivering video.");
-                if ((flags & (MediaFoundationInterop.SourceReaderNativeMediaTypeChanged |
-                              MediaFoundationInterop.SourceReaderCurrentMediaTypeChanged)) != 0)
-                {
-                    throw new InvalidOperationException("The capture device changed video format while streaming.");
-                }
-                if (sample == 0) continue;
 
+            _readStage = "waiting-for-device";
+            Interlocked.Increment(ref _readsStarted);
+            Interlocked.Exchange(ref _lastReadStartedTicks, Stopwatch.GetTimestamp());
+            MediaFoundationInterop.ThrowIfFailed(
+                MediaFoundationInterop.ReadSampleAsync(
+                    _sourceReader,
+                    MediaFoundationInterop.FirstVideoStream),
+                "Capture device frame request");
+        }
+    }
+
+    private void HandleReadSample(int hr, uint flags, nint sample)
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+
+        try
+        {
+            _readStage = "processing-device-frame";
+            MediaFoundationInterop.ThrowIfFailed(hr, "Capture device frame read");
+            if ((flags & MediaFoundationInterop.SourceReaderError) != 0)
+                throw new InvalidOperationException("The capture device reported a frame read error.");
+            if ((flags & MediaFoundationInterop.SourceReaderEndOfStream) != 0)
+                throw new CaptureTargetUnavailableException("The capture device stopped delivering video.");
+            if ((flags & (MediaFoundationInterop.SourceReaderNativeMediaTypeChanged |
+                          MediaFoundationInterop.SourceReaderCurrentMediaTypeChanged)) != 0)
+            {
+                throw new InvalidOperationException("The capture device changed video format while streaming.");
+            }
+
+            if (sample != 0)
+            {
                 CopySample(sample);
                 Interlocked.Increment(ref _framesReady);
                 Interlocked.Exchange(ref _lastFrameReadyTicks, Stopwatch.GetTimestamp());
@@ -408,10 +427,44 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
                 Interlocked.Increment(ref _frameVersion);
                 _frameSignal.Set();
             }
-            finally
+
+            RequestNextFrame();
+        }
+        catch (Exception ex)
+        {
+            if (Volatile.Read(ref _disposed) == 0)
             {
-                MediaFoundationInterop.Release(ref sample);
+                Volatile.Write(ref _captureError, ex);
+                _readStage = "failed";
+                _frameSignal.Set();
+                _stopRequested.Set();
             }
+        }
+    }
+
+    private void HandleFlush() => _flushCompleted.Set();
+
+    private void FlushSourceReader()
+    {
+        int hr;
+        lock (_readerGate)
+        {
+            if (_sourceReader == 0) return;
+            hr = MediaFoundationInterop.Flush(
+                _sourceReader,
+                MediaFoundationInterop.AllStreams);
+        }
+
+        if (hr < 0)
+        {
+            Console.Error.WriteLine($"[capture-device] reader flush failed (HRESULT 0x{hr:X8}).");
+            return;
+        }
+
+        if (!_flushCompleted.Wait(FlushTimeoutMs))
+        {
+            Console.Error.WriteLine(
+                "[capture-device] reader flush did not finish within 1.5 seconds; shutting down the media source.");
         }
     }
 
@@ -492,11 +545,161 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
 
     private void CleanupSourceReader()
     {
+        SourceReaderCallback? readerCallback;
         lock (_readerGate)
         {
             if (_mediaSource != 0) _ = MediaFoundationInterop.ShutdownMediaSource(_mediaSource);
             MediaFoundationInterop.Release(ref _sourceReader);
             MediaFoundationInterop.Release(ref _mediaSource);
+            readerCallback = _readerCallback;
+            _readerCallback = null;
+        }
+        readerCallback?.Dispose();
+    }
+
+    private static string SingleLine(string value) => value.Replace('\r', ' ').Replace('\n', ' ');
+
+    private sealed unsafe class SourceReaderCallback : IDisposable
+    {
+        private const int ENoInterface = unchecked((int)0x80004002);
+        private const int EPointer = unchecked((int)0x80004003);
+        private const int EFail = unchecked((int)0x80004005);
+        private static readonly Guid IidUnknown = new("00000000-0000-0000-C000-000000000046");
+        private static readonly nint Vtable = CreateVtable();
+
+        private readonly MediaFoundationCapture _owner;
+        private nint _instance;
+
+        internal SourceReaderCallback(MediaFoundationCapture owner)
+        {
+            _owner = owner;
+            GCHandle handle = GCHandle.Alloc(this);
+            try
+            {
+                var instance = (NativeInstance*)NativeMemory.AllocZeroed((nuint)sizeof(NativeInstance));
+                if (instance is null) throw new OutOfMemoryException();
+                instance->Vtable = Vtable;
+                instance->Handle = GCHandle.ToIntPtr(handle);
+                instance->RefCount = 1;
+                _instance = (nint)instance;
+            }
+            catch
+            {
+                handle.Free();
+                throw;
+            }
+        }
+
+        internal nint Pointer => Volatile.Read(ref _instance);
+
+        public void Dispose()
+        {
+            nint instance = Interlocked.Exchange(ref _instance, 0);
+            if (instance != 0) _ = ReleaseCore(instance);
+        }
+
+        private static nint CreateVtable()
+        {
+            nint vtable = RuntimeHelpers.AllocateTypeAssociatedMemory(
+                typeof(SourceReaderCallback),
+                checked(6 * nint.Size));
+            var entries = (nint*)vtable;
+            entries[0] = (nint)(delegate* unmanaged[Stdcall]<nint, Guid*, nint*, int>)&QueryInterface;
+            entries[1] = (nint)(delegate* unmanaged[Stdcall]<nint, uint>)&AddRef;
+            entries[2] = (nint)(delegate* unmanaged[Stdcall]<nint, uint>)&Release;
+            entries[3] = (nint)(delegate* unmanaged[Stdcall]<nint, int, uint, uint, long, nint, int>)&OnReadSample;
+            entries[4] = (nint)(delegate* unmanaged[Stdcall]<nint, uint, int>)&OnFlush;
+            entries[5] = (nint)(delegate* unmanaged[Stdcall]<nint, uint, nint, int>)&OnEvent;
+            return vtable;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static int QueryInterface(nint self, Guid* iid, nint* result)
+        {
+            if (result is null) return EPointer;
+            *result = 0;
+            if (iid is null) return EPointer;
+            if (*iid != IidUnknown && *iid != MediaFoundationInterop.IidSourceReaderCallback)
+                return ENoInterface;
+            *result = self;
+            _ = AddRefCore(self);
+            return 0;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static uint AddRef(nint self) => AddRefCore(self);
+
+        private static uint AddRefCore(nint self) =>
+            unchecked((uint)Interlocked.Increment(ref ((NativeInstance*)self)->RefCount));
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static uint Release(nint self) => ReleaseCore(self);
+
+        private static uint ReleaseCore(nint self)
+        {
+            var instance = (NativeInstance*)self;
+            int count = Interlocked.Decrement(ref instance->RefCount);
+            if (count != 0) return unchecked((uint)count);
+
+            nint handle = instance->Handle;
+            instance->Handle = 0;
+            if (handle != 0) GCHandle.FromIntPtr(handle).Free();
+            NativeMemory.Free(instance);
+            return 0;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static int OnReadSample(
+            nint self,
+            int hrStatus,
+            uint streamIndex,
+            uint streamFlags,
+            long timestamp,
+            nint sample)
+        {
+            try
+            {
+                GetCallback(self)._owner.HandleReadSample(hrStatus, streamFlags, sample);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[capture-device] source reader frame callback failed: {SingleLine(ex.Message)}");
+                return EFail;
+            }
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static int OnFlush(nint self, uint streamIndex)
+        {
+            try
+            {
+                GetCallback(self)._owner.HandleFlush();
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(
+                    $"[capture-device] source reader flush callback failed: {SingleLine(ex.Message)}");
+                return EFail;
+            }
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvStdcall) })]
+        private static int OnEvent(nint self, uint streamIndex, nint mediaEvent) => 0;
+
+        private static SourceReaderCallback GetCallback(nint self)
+        {
+            nint handle = ((NativeInstance*)self)->Handle;
+            return (SourceReaderCallback)GCHandle.FromIntPtr(handle).Target!;
+        }
+
+        private struct NativeInstance
+        {
+            internal nint Vtable;
+            internal nint Handle;
+            internal int RefCount;
         }
     }
 
@@ -504,20 +707,7 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _frameSignal.Set();
-        Task flush = Task.Run(() =>
-        {
-            lock (_readerGate)
-            {
-                if (_sourceReader != 0)
-                    _ = MediaFoundationInterop.Flush(_sourceReader, MediaFoundationInterop.AllStreams);
-            }
-        });
-        if (!flush.Wait(FlushTimeoutMs))
-        {
-            Console.Error.WriteLine(
-                "[capture-device] reader flush did not finish within 1.5 seconds; cleanup remains on the background reader.");
-            return;
-        }
+        _stopRequested.Set();
         if (_worker.IsAlive && !_worker.Join(WorkerJoinTimeoutMs))
         {
             Console.Error.WriteLine(
@@ -526,5 +716,7 @@ internal sealed class MediaFoundationCapture : ICaptureSource, ICaptureDiagnosti
         }
         _frameSignal.Dispose();
         _initialized.Dispose();
+        _stopRequested.Dispose();
+        _flushCompleted.Dispose();
     }
 }
