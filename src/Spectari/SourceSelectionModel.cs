@@ -6,12 +6,14 @@ internal enum SourceKind
 {
     Window,
     Monitor,
+    CaptureDevice,
 }
 
 internal sealed record SourceSelection(
     SourceKind Kind,
     IntPtr? WindowHandle,
     string? MonitorDeviceName,
+    string? CaptureDeviceSymbolicLink,
     string AudioKey);
 
 internal enum SourceSelectionApplyFailure
@@ -19,6 +21,7 @@ internal enum SourceSelectionApplyFailure
     None,
     WindowUnavailable,
     MonitorUnavailable,
+    CaptureDeviceUnavailable,
     AudioUnavailable,
 }
 
@@ -29,15 +32,23 @@ internal sealed class SourceSelectionModel
 
     private readonly Func<List<WindowDescription>> _enumerateWindows;
     private readonly Func<List<MonitorDescription>> _enumerateMonitors;
+    private readonly Func<List<CaptureDeviceDescription>> _enumerateCaptureDevices;
     private readonly uint _ownPid;
     private List<WindowDescription> _windows = [];
     private List<MonitorDescription> _monitors = [];
+    private List<CaptureDeviceDescription> _captureDevices = [];
+    private List<string> _captureDeviceDisplayItems = [];
     private IntPtr? _selectedWindowHandle;
     private string? _selectedMonitorDeviceName;
+    private string? _selectedCaptureDeviceSymbolicLink;
     private string _audioKey = CapturedWindowAudioKey;
 
     internal SourceSelectionModel()
-        : this(WindowEnumerator.EnumerateWindows, MonitorEnumerator.GetMonitors, (uint)Environment.ProcessId)
+        : this(
+            WindowEnumerator.EnumerateWindows,
+            MonitorEnumerator.GetMonitors,
+            CaptureDeviceEnumerator.GetDevices,
+            (uint)Environment.ProcessId)
     {
     }
 
@@ -45,23 +56,39 @@ internal sealed class SourceSelectionModel
         Func<List<WindowDescription>> enumerateWindows,
         Func<List<MonitorDescription>> enumerateMonitors,
         uint ownPid)
+        : this(enumerateWindows, enumerateMonitors, () => [], ownPid)
+    {
+    }
+
+    internal SourceSelectionModel(
+        Func<List<WindowDescription>> enumerateWindows,
+        Func<List<MonitorDescription>> enumerateMonitors,
+        Func<List<CaptureDeviceDescription>> enumerateCaptureDevices,
+        uint ownPid)
     {
         _enumerateWindows = enumerateWindows;
         _enumerateMonitors = enumerateMonitors;
+        _enumerateCaptureDevices = enumerateCaptureDevices;
         _ownPid = ownPid;
     }
 
     internal SourceKind Kind { get; private set; } = SourceKind.Window;
     internal IReadOnlyList<WindowDescription> Windows => _windows;
     internal IReadOnlyList<MonitorDescription> Monitors => _monitors;
+    internal IReadOnlyList<CaptureDeviceDescription> CaptureDevices => _captureDevices;
     internal IReadOnlyList<string> WindowDisplayItems => _windows.Select(FormatWindow).ToArray();
     internal IReadOnlyList<string> MonitorDisplayItems => _monitors.Select(FormatMonitor).ToArray();
+    internal IReadOnlyList<string> CaptureDeviceDisplayItems => _captureDeviceDisplayItems;
     internal IReadOnlyList<string> AudioDisplayItems =>
     [
         "No audio",
-        Kind == SourceKind.Window
-            ? "Captured window's audio"
-            : "No audio (monitor share: pick an app below)",
+        Kind switch
+        {
+            SourceKind.Window => "Captured window's audio",
+            SourceKind.Monitor => "No audio (monitor share: pick an app below)",
+            SourceKind.CaptureDevice => "No audio (capture device share: pick an app below)",
+            _ => "No audio (pick an app below)",
+        },
         .. _windows.Select(FormatAudioWindow),
     ];
 
@@ -71,6 +98,10 @@ internal sealed class SourceSelectionModel
 
     internal int SelectedMonitorIndex => _selectedMonitorDeviceName is { } deviceName
         ? _monitors.FindIndex(monitor => MonitorIdentityEquals(monitor.DeviceName, deviceName))
+        : -1;
+
+    internal int SelectedCaptureDeviceIndex => _selectedCaptureDeviceSymbolicLink is { } symbolicLink
+        ? _captureDevices.FindIndex(device => CaptureDeviceIdentityEquals(device.SymbolicLink, symbolicLink))
         : -1;
 
     internal int SelectedAudioIndex
@@ -92,12 +123,18 @@ internal sealed class SourceSelectionModel
         ? _monitors[index]
         : null;
 
+    internal CaptureDeviceDescription? SelectedCaptureDevice =>
+        SelectedCaptureDeviceIndex is int index && index >= 0
+            ? _captureDevices[index]
+            : null;
+
     internal string AudioKey => _audioKey;
 
     internal SourceSelection CurrentSelection => new(
         Kind,
         _selectedWindowHandle,
         _selectedMonitorDeviceName,
+        _selectedCaptureDeviceSymbolicLink,
         _audioKey);
 
     internal (int W, int H) SelectedSourceSize => Kind switch
@@ -119,6 +156,7 @@ internal sealed class SourceSelectionModel
     {
         RefreshWindows();
         RefreshMonitors();
+        RefreshCaptureDevices();
     }
 
     internal void RefreshWindows()
@@ -145,19 +183,43 @@ internal sealed class SourceSelectionModel
             _selectedMonitorDeviceName = _monitors.Count > 0 ? _monitors[0].DeviceName : null;
     }
 
+    internal void RefreshCaptureDevices()
+    {
+        IReadOnlyList<CaptureDeviceDisplayItem> items =
+            CaptureDevicePolicy.PrepareDisplayItems(_enumerateCaptureDevices());
+        _captureDevices = items.Select(item => item.Device).ToList();
+        _captureDeviceDisplayItems = items.Select(item => item.DisplayName).ToList();
+        if (SelectedCaptureDeviceIndex < 0)
+        {
+            _selectedCaptureDeviceSymbolicLink = _captureDevices.Count > 0
+                ? _captureDevices[0].SymbolicLink
+                : null;
+        }
+    }
+
     internal SourceSelectionModel CreateFreshSnapshot()
     {
-        var snapshot = new SourceSelectionModel(_enumerateWindows, _enumerateMonitors, _ownPid)
+        IReadOnlyList<CaptureDeviceDisplayItem> captureDeviceItems =
+            CaptureDevicePolicy.PrepareDisplayItems(_enumerateCaptureDevices());
+        var snapshot = new SourceSelectionModel(
+            _enumerateWindows,
+            _enumerateMonitors,
+            _enumerateCaptureDevices,
+            _ownPid)
         {
             Kind = Kind,
             _selectedWindowHandle = _selectedWindowHandle,
             _selectedMonitorDeviceName = _selectedMonitorDeviceName,
+            _selectedCaptureDeviceSymbolicLink = _selectedCaptureDeviceSymbolicLink,
             _audioKey = _audioKey,
             _windows = PrepareWindows(_enumerateWindows(), _ownPid),
             _monitors = [.. _enumerateMonitors()],
+            _captureDevices = captureDeviceItems.Select(item => item.Device).ToList(),
+            _captureDeviceDisplayItems = captureDeviceItems.Select(item => item.DisplayName).ToList(),
         };
         if (snapshot.SelectedWindowIndex < 0) snapshot._selectedWindowHandle = null;
         if (snapshot.SelectedMonitorIndex < 0) snapshot._selectedMonitorDeviceName = null;
+        if (snapshot.SelectedCaptureDeviceIndex < 0) snapshot._selectedCaptureDeviceSymbolicLink = null;
         snapshot.NormalizeAudioSelection();
         return snapshot;
     }
@@ -169,6 +231,11 @@ internal sealed class SourceSelectionModel
 
     internal void SelectMonitorIndex(int index) =>
         _selectedMonitorDeviceName = index >= 0 && index < _monitors.Count ? _monitors[index].DeviceName : null;
+
+    internal void SelectCaptureDeviceIndex(int index) =>
+        _selectedCaptureDeviceSymbolicLink = index >= 0 && index < _captureDevices.Count
+            ? _captureDevices[index].SymbolicLink
+            : null;
 
     internal void SelectAudioIndex(int index)
     {
@@ -199,6 +266,15 @@ internal sealed class SourceSelectionModel
         if (index >= 0) _selectedMonitorDeviceName = _monitors[index].DeviceName;
     }
 
+    internal void SelectCaptureDevice(string? symbolicLink)
+    {
+        int index = string.IsNullOrEmpty(symbolicLink)
+            ? -1
+            : _captureDevices.FindIndex(device =>
+                CaptureDeviceIdentityEquals(device.SymbolicLink, symbolicLink));
+        if (index >= 0) _selectedCaptureDeviceSymbolicLink = _captureDevices[index].SymbolicLink;
+    }
+
     internal void SelectAudioKey(string? key)
     {
         _audioKey = string.IsNullOrEmpty(key) ? CapturedWindowAudioKey : key;
@@ -213,11 +289,17 @@ internal sealed class SourceSelectionModel
         MonitorDescription? monitor = selection.MonitorDeviceName is { } monitorDeviceName
             ? _monitors.FirstOrDefault(candidate => MonitorIdentityEquals(candidate.DeviceName, monitorDeviceName))
             : null;
+        CaptureDeviceDescription? captureDevice = selection.CaptureDeviceSymbolicLink is { } symbolicLink
+            ? _captureDevices.FirstOrDefault(candidate =>
+                CaptureDeviceIdentityEquals(candidate.SymbolicLink, symbolicLink))
+            : null;
 
         if (selection.Kind == SourceKind.Window && window is null)
             return SourceSelectionApplyFailure.WindowUnavailable;
         if (selection.Kind == SourceKind.Monitor && monitor is null)
             return SourceSelectionApplyFailure.MonitorUnavailable;
+        if (selection.Kind == SourceKind.CaptureDevice && captureDevice is null)
+            return SourceSelectionApplyFailure.CaptureDeviceUnavailable;
         if (selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey) &&
             !_windows.Any(candidate => AudioIdentityEquals(candidate.ProcessName, selection.AudioKey)))
             return SourceSelectionApplyFailure.AudioUnavailable;
@@ -225,6 +307,7 @@ internal sealed class SourceSelectionModel
         Kind = selection.Kind;
         if (window is not null) _selectedWindowHandle = window.Handle;
         if (monitor is not null) _selectedMonitorDeviceName = monitor.DeviceName;
+        if (captureDevice is not null) _selectedCaptureDeviceSymbolicLink = captureDevice.SymbolicLink;
         _audioKey = selection.AudioKey;
         return SourceSelectionApplyFailure.None;
     }
@@ -263,6 +346,9 @@ internal sealed class SourceSelectionModel
 
     private static bool MonitorIdentityEquals(string left, string right) =>
         left.Equals(right, StringComparison.OrdinalIgnoreCase);
+
+    private static bool CaptureDeviceIdentityEquals(string left, string right) =>
+        left.Equals(right, StringComparison.Ordinal);
 
     private static string Truncate(string value, int max) =>
         value.Length <= max ? value : value[..(max - 1)] + "…";

@@ -1,14 +1,14 @@
 namespace Spectari.Capture;
 
 /// <summary>
-/// A source of BGRA frames for the pipeline. Implementations: Windows.Graphics.Capture
-/// (windows + monitors, composited desktop) and DXGI desktop duplication
-/// (monitors only, sees exclusive-fullscreen content that WGC cannot).
+/// A source of BGRA frames for the pipeline. Implementations cover Windows.Graphics.Capture,
+/// DXGI desktop duplication, and Media Foundation video capture devices.
 /// </summary>
 public interface ICaptureSource : IDisposable
 {
     int Width { get; }
     int Height { get; }
+    int? FrameRate => null;
     uint GpuVendorId { get; }
     string AdapterName { get; }
     string AdapterLuid { get; }

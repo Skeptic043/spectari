@@ -79,6 +79,7 @@ public sealed class MainForm : Form
         public string SourceKind { get; set; } = "window";
         public string WindowProcess { get; set; } = "";
         public string MonitorDeviceName { get; set; } = "";
+        public string CaptureDeviceSymbolicLink { get; set; } = "";
         [JsonPropertyName("MonitorIndex")]
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public int? LegacyMonitorIndex { get; set; }
@@ -108,8 +109,10 @@ public sealed class MainForm : Form
 
     private readonly RadioButton _rbWindow = new() { Text = "Game / window", Checked = true, AutoSize = true };
     private readonly RadioButton _rbMonitor = new() { Text = "Monitor", AutoSize = true };
+    private readonly RadioButton _rbCaptureDevice = new() { Text = "Capture device", AutoSize = true };
     private readonly ComboBox _windowCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _monitorCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
+    private readonly ComboBox _captureDeviceCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _presetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _bitrateCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _encoderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, FlatStyle = FlatStyle.Flat };
@@ -246,16 +249,18 @@ public sealed class MainForm : Form
 
         // Audio lives with the source pickers: what you share and what it sounds
         // like are one decision. Name/port are plumbing, off to their own box.
-        var sourceGroup = MakeGroup("What to share", 140);
-        var sourceGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
+        var sourceGroup = MakeGroup("What to share", 170);
+        var sourceGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 4 };
         sourceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         sourceGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         sourceGrid.Controls.Add(_rbWindow, 0, 0);
         sourceGrid.Controls.Add(_windowCombo, 1, 0);
         sourceGrid.Controls.Add(_rbMonitor, 0, 1);
         sourceGrid.Controls.Add(_monitorCombo, 1, 1);
-        sourceGrid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 2);
-        sourceGrid.Controls.Add(_audioCombo, 1, 2);
+        sourceGrid.Controls.Add(_rbCaptureDevice, 0, 2);
+        sourceGrid.Controls.Add(_captureDeviceCombo, 1, 2);
+        sourceGrid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 3);
+        sourceGrid.Controls.Add(_audioCombo, 1, 3);
         _audioCombo.Width = 330;
         sourceGroup.Controls.Add(sourceGrid);
 
@@ -398,13 +403,19 @@ public sealed class MainForm : Form
         // Nothing gets disabled - the selected radio decides which combo is USED.
         _windowCombo.DropDown += (_, _) => PopulateWindows();
         _monitorCombo.DropDown += (_, _) => PopulateMonitors();
-        _rbWindow.CheckedChanged += (_, _) =>
+        _captureDeviceCombo.DropDown += (_, _) => PopulateCaptureDevices();
+        void SelectSourceKind(SourceKind kind, RadioButton radio)
         {
-            _sourceSelection.SelectKind(_rbWindow.Checked ? SourceKind.Window : SourceKind.Monitor);
+            if (!radio.Checked) return;
+            _sourceSelection.SelectKind(kind);
             RenderAudioPicker(_sourceSelection, _audioCombo);
             RefreshSourceOptions();
             ScheduleIdlePreviewRefresh();
-        };
+        }
+        _rbWindow.CheckedChanged += (_, _) => SelectSourceKind(SourceKind.Window, _rbWindow);
+        _rbMonitor.CheckedChanged += (_, _) => SelectSourceKind(SourceKind.Monitor, _rbMonitor);
+        _rbCaptureDevice.CheckedChanged += (_, _) =>
+            SelectSourceKind(SourceKind.CaptureDevice, _rbCaptureDevice);
         _windowCombo.SelectedIndexChanged += (_, _) =>
         {
             _sourceSelection.SelectWindowIndex(_windowCombo.SelectedIndex);
@@ -417,6 +428,15 @@ public sealed class MainForm : Form
             RefreshSourceOptions();
         };
         _monitorCombo.SelectionChangeCommitted += (_, _) => { if (_rbMonitor.Checked) ScheduleIdlePreviewRefresh(); };
+        _captureDeviceCombo.SelectedIndexChanged += (_, _) =>
+        {
+            _sourceSelection.SelectCaptureDeviceIndex(_captureDeviceCombo.SelectedIndex);
+            RefreshSourceOptions();
+        };
+        _captureDeviceCombo.SelectionChangeCommitted += (_, _) =>
+        {
+            if (_rbCaptureDevice.Checked) ScheduleIdlePreviewRefresh();
+        };
         _audioCombo.SelectedIndexChanged += (_, _) => _sourceSelection.SelectAudioIndex(_audioCombo.SelectedIndex);
         _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
         // The bitrate combo is the single source of truth for the chosen tier:
@@ -517,7 +537,9 @@ public sealed class MainForm : Form
 
         Console.WriteLine("[boot] source enumeration start");
         PopulateSources();
-        Console.WriteLine($"[boot] source enumeration complete: {_sourceSelection.Windows.Count} windows, {_sourceSelection.Monitors.Count} monitors");
+        Console.WriteLine(
+            $"[boot] source enumeration complete: {_sourceSelection.Windows.Count} windows, " +
+            $"{_sourceSelection.Monitors.Count} monitors, {_sourceSelection.CaptureDevices.Count} capture devices");
         LoadSettings();
         Console.WriteLine("[boot] update check start");
         _ = CheckForUpdatesAsync();
@@ -629,8 +651,10 @@ public sealed class MainForm : Form
         try
         {
             Console.WriteLine(
-                $"[preview] start pick: kind={(_sourceSelection.Kind == SourceKind.Window ? "window" : "monitor")} " +
-                $"windowIndex={_sourceSelection.SelectedWindowIndex} monitorIndex={_sourceSelection.SelectedMonitorIndex}");
+                $"[preview] start pick: kind={_sourceSelection.Kind.ToString().ToLowerInvariant()} " +
+                $"windowIndex={_sourceSelection.SelectedWindowIndex} " +
+                $"monitorIndex={_sourceSelection.SelectedMonitorIndex} " +
+                $"captureDeviceIndex={_sourceSelection.SelectedCaptureDeviceIndex}");
             if (_sourceSelection.Kind == SourceKind.Window)
             {
                 WindowDescription? window = _sourceSelection.SelectedWindow;
@@ -657,7 +681,7 @@ public sealed class MainForm : Form
 
                 startResult = await _idlePreviewCapture.StartForWindowAsync(handle);
             }
-            else
+            else if (_sourceSelection.Kind == SourceKind.Monitor)
             {
                 MonitorDescription? monitor = _sourceSelection.SelectedMonitor;
                 if (monitor is null)
@@ -667,6 +691,18 @@ public sealed class MainForm : Form
                 }
 
                 startResult = await _idlePreviewCapture.StartForMonitorAsync(monitor.Handle);
+            }
+            else
+            {
+                CaptureDeviceDescription? captureDevice = _sourceSelection.SelectedCaptureDevice;
+                if (captureDevice is null)
+                {
+                    SetPreviewPlaceholder("Select a source to preview.");
+                    return;
+                }
+
+                startResult = await _idlePreviewCapture.StartForCaptureDeviceAsync(
+                    captureDevice.SymbolicLink);
             }
 
             IdlePreviewStartState startState = startResult.State;
@@ -814,6 +850,7 @@ public sealed class MainForm : Form
     {
         PopulateWindows();
         PopulateMonitors();
+        PopulateCaptureDevices();
     }
 
     private void PopulateMonitors()
@@ -831,14 +868,29 @@ public sealed class MainForm : Form
         RenderAudioPicker(_sourceSelection, _audioCombo);
     }
 
+    private void PopulateCaptureDevices()
+    {
+        using IDisposable? operation = _uiHangWatchdog?.TrackOperation("capture device repopulation");
+        _sourceSelection.RefreshCaptureDevices();
+        RenderPicker(
+            _captureDeviceCombo,
+            _sourceSelection.CaptureDeviceDisplayItems,
+            _sourceSelection.SelectedCaptureDeviceIndex);
+    }
+
     private static void RenderSourcePickers(
         SourceSelectionModel sourceSelection,
         ComboBox windowCombo,
         ComboBox monitorCombo,
+        ComboBox captureDeviceCombo,
         ComboBox audioCombo)
     {
         RenderPicker(windowCombo, sourceSelection.WindowDisplayItems, sourceSelection.SelectedWindowIndex);
         RenderPicker(monitorCombo, sourceSelection.MonitorDisplayItems, sourceSelection.SelectedMonitorIndex);
+        RenderPicker(
+            captureDeviceCombo,
+            sourceSelection.CaptureDeviceDisplayItems,
+            sourceSelection.SelectedCaptureDeviceIndex);
         RenderAudioPicker(sourceSelection, audioCombo);
     }
 
@@ -886,6 +938,7 @@ public sealed class MainForm : Form
             AppendLog($"[audio] '{audioKey}' is not running; streaming without audio");
 
         IntPtr windowHandle = IntPtr.Zero, monitorHandle = IntPtr.Zero;
+        string captureDeviceSymbolicLink = "";
         string sourceName;
         if (_sourceSelection.Kind == SourceKind.Window)
         {
@@ -900,18 +953,29 @@ public sealed class MainForm : Form
             windowHandle = w.Handle;
             sourceName = $"window '{w.Title}' [{w.ProcessName}]";
         }
-        else
+        else if (_sourceSelection.Kind == SourceKind.Monitor)
         {
             MonitorDescription? m = _sourceSelection.SelectedMonitor;
             if (m is null) { AppendLog("No monitor selected."); return null; }
             monitorHandle = m.Handle;
             sourceName = m.DeviceName;
         }
+        else
+        {
+            CaptureDeviceDescription? device = _sourceSelection.SelectedCaptureDevice;
+            if (device is null) { AppendLog("No capture device selected."); return null; }
+            captureDeviceSymbolicLink = device.SymbolicLink;
+            string friendlyName = string.IsNullOrWhiteSpace(device.FriendlyName)
+                ? "Capture device"
+                : device.FriendlyName.Trim();
+            sourceName = $"capture device '{friendlyName}'";
+        }
 
         return new SessionConfig
         {
             WindowHandle = windowHandle,
             MonitorHandle = monitorHandle,
+            CaptureDeviceSymbolicLink = captureDeviceSymbolicLink,
             SourceName = sourceName,
             StreamName = _nameInput.Text.Trim(),
             AudioPid = audioPid,
@@ -1005,7 +1069,7 @@ public sealed class MainForm : Form
             MaximizeBox = false,
             ShowInTaskbar = false,
             StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(480, 276),
+            ClientSize = new Size(480, 306),
             BackColor = Bg,
             ForeColor = Fg,
         };
@@ -1013,14 +1077,16 @@ public sealed class MainForm : Form
 
         var rbWin = new RadioButton { Text = "Game / window", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Window };
         var rbMon = new RadioButton { Text = "Monitor", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Monitor };
+        var rbCaptureDevice = new RadioButton { Text = "Capture device", AutoSize = true, Checked = dialogSources.Kind == SourceKind.CaptureDevice };
         var winCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
         var monCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
+        var captureDeviceCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
         var presetCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, FlatStyle = FlatStyle.Flat };
         var bitrateCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
         var encoderCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
         var audioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
 
-        RenderSourcePickers(dialogSources, winCombo, monCombo, audioCombo);
+        RenderSourcePickers(dialogSources, winCombo, monCombo, captureDeviceCombo, audioCombo);
         foreach (object it in _presetCombo.Items) presetCombo.Items.Add(it);
         foreach (object it in _encoderCombo.Items) encoderCombo.Items.Add(it);
         presetCombo.SelectedIndex = _presetCombo.SelectedIndex;
@@ -1061,12 +1127,17 @@ public sealed class MainForm : Form
                 refreshingDlgSourceOptions = false;
             }
         }
-        rbWin.CheckedChanged += (_, _) =>
+        void SelectDialogKind(SourceKind kind, RadioButton radio)
         {
-            dialogSources.SelectKind(rbWin.Checked ? SourceKind.Window : SourceKind.Monitor);
+            if (!radio.Checked) return;
+            dialogSources.SelectKind(kind);
             RenderAudioPicker(dialogSources, audioCombo);
             RefreshDlgSourceOptions();
-        };
+        }
+        rbWin.CheckedChanged += (_, _) => SelectDialogKind(SourceKind.Window, rbWin);
+        rbMon.CheckedChanged += (_, _) => SelectDialogKind(SourceKind.Monitor, rbMon);
+        rbCaptureDevice.CheckedChanged += (_, _) =>
+            SelectDialogKind(SourceKind.CaptureDevice, rbCaptureDevice);
         winCombo.SelectedIndexChanged += (_, _) =>
         {
             dialogSources.SelectWindowIndex(winCombo.SelectedIndex);
@@ -1077,25 +1148,32 @@ public sealed class MainForm : Form
             dialogSources.SelectMonitorIndex(monCombo.SelectedIndex);
             RefreshDlgSourceOptions();
         };
+        captureDeviceCombo.SelectedIndexChanged += (_, _) =>
+        {
+            dialogSources.SelectCaptureDeviceIndex(captureDeviceCombo.SelectedIndex);
+            RefreshDlgSourceOptions();
+        };
         audioCombo.SelectedIndexChanged += (_, _) => dialogSources.SelectAudioIndex(audioCombo.SelectedIndex);
         presetCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
         RefreshDlgSourceOptions();
 
-        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 7, Padding = new Padding(10) };
+        var grid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 8, Padding = new Padding(10) };
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         grid.Controls.Add(rbWin, 0, 0);
         grid.Controls.Add(winCombo, 1, 0);
         grid.Controls.Add(rbMon, 0, 1);
         grid.Controls.Add(monCombo, 1, 1);
-        grid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 2);
-        grid.Controls.Add(audioCombo, 1, 2);
-        grid.Controls.Add(new Label { Text = "Preset:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 3);
-        grid.Controls.Add(presetCombo, 1, 3);
-        grid.Controls.Add(new Label { Text = "Bitrate:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 4);
-        grid.Controls.Add(bitrateCombo, 1, 4);
-        grid.Controls.Add(new Label { Text = "Encoder:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 5);
-        grid.Controls.Add(encoderCombo, 1, 5);
+        grid.Controls.Add(rbCaptureDevice, 0, 2);
+        grid.Controls.Add(captureDeviceCombo, 1, 2);
+        grid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 3);
+        grid.Controls.Add(audioCombo, 1, 3);
+        grid.Controls.Add(new Label { Text = "Preset:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 4);
+        grid.Controls.Add(presetCombo, 1, 4);
+        grid.Controls.Add(new Label { Text = "Bitrate:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 5);
+        grid.Controls.Add(bitrateCombo, 1, 5);
+        grid.Controls.Add(new Label { Text = "Encoder:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 6);
+        grid.Controls.Add(encoderCombo, 1, 6);
 
         var ok = new Button { Text = _streamController.HasSession ? "Switch" : "Start", Width = 96, Height = 28, DialogResult = DialogResult.OK };
         var cancel = new Button { Text = "Cancel", Width = 80, Height = 28, DialogResult = DialogResult.Cancel };
@@ -1103,7 +1181,7 @@ public sealed class MainForm : Form
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
         grid.SetColumnSpan(buttons, 2);
-        grid.Controls.Add(buttons, 0, 6);
+        grid.Controls.Add(buttons, 0, 7);
         dlg.Controls.Add(grid);
         dlg.AcceptButton = ok;
         dlg.CancelButton = cancel;
@@ -1112,7 +1190,7 @@ public sealed class MainForm : Form
 
         if (dlg.ShowDialog(this) != DialogResult.OK) return;
 
-        // The dialog has only held descriptions so far. Release any idle WGC
+        // The dialog has only held descriptions so far. Release any idle capture
         // source before its accepted pick is applied to the main controls and
         // can flow into Start/Switch acquisition.
         StopIdlePreview(hideLayout: true);
@@ -1125,8 +1203,8 @@ public sealed class MainForm : Form
         // whatever the refreshed main list happens to select. All resolution reads
         // below happen before the first selected-value write, so an abort leaves the
         // running stream's effective configuration untouched.
-        // Match the picked capture source by stable identity: HWND for a window and
-        // device name for a monitor. Preset remains by index and audio by key.
+        // Match the picked capture source by stable identity: HWND for a window,
+        // device name for a monitor, and symbolic link for a capture device.
         PopulateSources();
         SourceSelection pickedSelection = dialogSources.CurrentSelection;
         SourceSelectionApplyFailure applyFailure = _sourceSelection.TryApplySelection(pickedSelection);
@@ -1138,6 +1216,8 @@ public sealed class MainForm : Form
                     $"Switch cancelled: '{dialogSources.SelectedWindow?.ProcessName ?? "the picked window"}' is no longer available. Pick again.",
                 SourceSelectionApplyFailure.MonitorUnavailable =>
                     "Switch cancelled: the picked monitor is no longer available. Pick again.",
+                SourceSelectionApplyFailure.CaptureDeviceUnavailable =>
+                    "Switch cancelled: the picked capture device is no longer available. Pick again.",
                 SourceSelectionApplyFailure.AudioUnavailable =>
                     $"Switch cancelled: audio source '{pickedSelection.AudioKey}' is no longer available. Pick again.",
                 _ => "Switch cancelled: the picked source is no longer available. Pick again.",
@@ -1149,7 +1229,13 @@ public sealed class MainForm : Form
 
         _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
         _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
-        RenderSourcePickers(_sourceSelection, _windowCombo, _monitorCombo, _audioCombo);
+        _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
+        RenderSourcePickers(
+            _sourceSelection,
+            _windowCombo,
+            _monitorCombo,
+            _captureDeviceCombo,
+            _audioCombo);
         if (presetCombo.SelectedIndex >= 0) _presetCombo.SelectedIndex = presetCombo.SelectedIndex;
         if (encoderCombo.SelectedIndex >= 0) _encoderCombo.SelectedIndex = encoderCombo.SelectedIndex;
         // Writing the source/preset back above repopulated the main bitrate combo;
@@ -1361,8 +1447,10 @@ public sealed class MainForm : Form
         bool on = !locked;
         _rbWindow.Enabled = on;
         _rbMonitor.Enabled = on;
+        _rbCaptureDevice.Enabled = on;
         _windowCombo.Enabled = on;
         _monitorCombo.Enabled = on;
+        _captureDeviceCombo.Enabled = on;
         _presetCombo.Enabled = on;
         _bitrateCombo.Enabled = on;
         _encoderCombo.Enabled = on;
@@ -1871,13 +1959,25 @@ public sealed class MainForm : Form
                 return;
             }
 
-            _sourceSelection.SelectKind(s.SourceKind == "monitor" ? SourceKind.Monitor : SourceKind.Window);
+            _sourceSelection.SelectKind(s.SourceKind switch
+            {
+                "monitor" => SourceKind.Monitor,
+                "capture-device" => SourceKind.CaptureDevice,
+                _ => SourceKind.Window,
+            });
             _sourceSelection.SelectMonitorDevice(s.MonitorDeviceName, s.LegacyMonitorIndex);
             _sourceSelection.SelectWindowProcess(s.WindowProcess);
+            _sourceSelection.SelectCaptureDevice(s.CaptureDeviceSymbolicLink);
             _sourceSelection.SelectAudioKey(s.AudioSource);
             _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
             _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
-            RenderSourcePickers(_sourceSelection, _windowCombo, _monitorCombo, _audioCombo);
+            _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
+            RenderSourcePickers(
+                _sourceSelection,
+                _windowCombo,
+                _monitorCombo,
+                _captureDeviceCombo,
+                _audioCombo);
             // Set the saved tier first: changing the preset index below fires
             // PopulateBitrateOptions, which reads _savedBitrateTier to reselect.
             if (s.BitrateTier is "low" or "med" or "high") _savedBitrateTier = s.BitrateTier;
@@ -1914,9 +2014,16 @@ public sealed class MainForm : Form
             HostAccessPersistedState access = _hostAccess.PersistedState;
             var s = new AppSettings
             {
-                SourceKind = _sourceSelection.Kind == SourceKind.Monitor ? "monitor" : "window",
+                SourceKind = _sourceSelection.Kind switch
+                {
+                    SourceKind.Monitor => "monitor",
+                    SourceKind.CaptureDevice => "capture-device",
+                    _ => "window",
+                },
                 WindowProcess = _sourceSelection.SelectedWindow?.ProcessName ?? "",
                 MonitorDeviceName = _sourceSelection.SelectedMonitor?.DeviceName ?? "",
+                CaptureDeviceSymbolicLink =
+                    _sourceSelection.SelectedCaptureDevice?.SymbolicLink ?? "",
                 PresetHeight = (_presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex]).Height,
                 PresetFps = (_presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex]).Fps,
                 BitrateTier = (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med",

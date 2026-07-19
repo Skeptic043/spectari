@@ -27,7 +27,7 @@ internal readonly record struct IdlePreviewStartResult(
     string? FailureMessage = null);
 
 /// <summary>
-/// Owns preview-only WGC lifecycle work so capture creation and teardown never
+/// Owns preview-only capture lifecycle work so source creation and teardown never
 /// run on the UI thread.
 /// </summary>
 internal sealed class IdlePreviewCapture : IDisposable
@@ -65,10 +65,16 @@ internal sealed class IdlePreviewCapture : IDisposable
             windowHandle,
             trace => ScreenCapture.ForPreviewWindow(windowHandle, trace));
 
+    public Task<IdlePreviewStartResult> StartForCaptureDeviceAsync(string symbolicLink) =>
+        StartAsync(
+            "capture-device",
+            IntPtr.Zero,
+            _ => new MediaFoundationCapture(symbolicLink));
+
     private Task<IdlePreviewStartResult> StartAsync(
         string targetKind,
         IntPtr windowHandle,
-        Func<CaptureCreationTrace, ScreenCapture> createCapture)
+        Func<CaptureCreationTrace, ICaptureSource> createCapture)
     {
         CancellationTokenSource creationCts;
         Task canceled;
@@ -121,7 +127,7 @@ internal sealed class IdlePreviewCapture : IDisposable
         int generation,
         CancellationTokenSource creationCts,
         IntPtr windowHandle,
-        Func<CaptureCreationTrace, ScreenCapture> createCapture,
+        Func<CaptureCreationTrace, ICaptureSource> createCapture,
         CaptureCreationTrace trace)
     {
         try
@@ -136,7 +142,7 @@ internal sealed class IdlePreviewCapture : IDisposable
             if (!CanCreate(generation, creationCts))
                 return CreationOutcome.Canceled;
 
-            ScreenCapture capture = createCapture(trace);
+            ICaptureSource capture = createCapture(trace);
             PreviewResources created;
             try
             {
@@ -567,7 +573,7 @@ internal sealed class IdlePreviewCapture : IDisposable
         private const int MaxPreviewWidth = 640;
         private const int MaxPreviewHeight = 360;
 
-        private readonly ScreenCapture _capture;
+        private readonly ICaptureSource _capture;
         private readonly IntPtr _windowHandle;
         private readonly byte[] _buffer;
         private readonly GCHandle _bufferPin;
@@ -582,7 +588,7 @@ internal sealed class IdlePreviewCapture : IDisposable
         [DllImport("user32.dll")]
         private static extern bool IsIconic(IntPtr hwnd);
 
-        public PreviewResources(ScreenCapture capture, IntPtr windowHandle)
+        public PreviewResources(ICaptureSource capture, IntPtr windowHandle)
         {
             _capture = capture;
             _windowHandle = windowHandle;
@@ -639,7 +645,11 @@ internal sealed class IdlePreviewCapture : IDisposable
         }
 
         public CaptureProgressSnapshot GetProgressSnapshot() =>
-            ((ICaptureDiagnostics)_capture).GetProgressSnapshot();
+            _capture is ICaptureDiagnostics diagnostics
+                ? diagnostics.GetProgressSnapshot()
+                : new CaptureProgressSnapshot(
+                    0, 0, 0, 0, 0, 0, 0, 0,
+                    "unavailable", "unavailable");
 
         private IdlePreviewPollResult ChangedState(IdlePreviewPollState state)
         {
