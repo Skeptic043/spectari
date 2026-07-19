@@ -29,6 +29,9 @@ internal sealed class SourceSelectionModel
 {
     internal const string NoAudioKey = "none";
     internal const string CapturedWindowAudioKey = "window";
+    // A colon cannot occur in a Windows process name, so this persisted mode
+    // key cannot be mistaken for one of the per-app selections.
+    internal const string DesktopAudioKey = "mode:desktop";
 
     private readonly Func<List<WindowDescription>> _enumerateWindows;
     private readonly Func<List<MonitorDescription>> _enumerateMonitors;
@@ -89,6 +92,7 @@ internal sealed class SourceSelectionModel
             SourceKind.CaptureDevice => "No audio (capture device share: pick an app below)",
             _ => "No audio (pick an app below)",
         },
+        "Desktop audio (all sound)",
         .. _windows.Select(FormatAudioWindow),
     ];
 
@@ -110,8 +114,9 @@ internal sealed class SourceSelectionModel
         {
             if (_audioKey == NoAudioKey) return 0;
             if (_audioKey == CapturedWindowAudioKey) return 1;
+            if (_audioKey == DesktopAudioKey) return 2;
             int index = _windows.FindIndex(window => AudioIdentityEquals(window.ProcessName, _audioKey));
-            return index >= 0 ? index + 2 : 1;
+            return index >= 0 ? index + 3 : 1;
         }
     }
 
@@ -147,10 +152,17 @@ internal sealed class SourceSelectionModel
     internal uint SelectedAudioPid => _audioKey switch
     {
         NoAudioKey => 0,
+        DesktopAudioKey => 0,
         CapturedWindowAudioKey when Kind == SourceKind.Window => SelectedWindow?.Pid ?? 0,
         CapturedWindowAudioKey => 0,
         _ => _windows.FirstOrDefault(window => AudioIdentityEquals(window.ProcessName, _audioKey))?.Pid ?? 0,
     };
+
+    internal bool IsDesktopAudioSelected => _audioKey == DesktopAudioKey;
+
+    internal bool IsSelectedAudioProcessUnavailable =>
+        _audioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey)
+        && SelectedAudioPid == 0;
 
     internal void RefreshAll()
     {
@@ -243,7 +255,8 @@ internal sealed class SourceSelectionModel
         {
             0 => NoAudioKey,
             1 => CapturedWindowAudioKey,
-            > 1 when index - 2 < _windows.Count => _windows[index - 2].ProcessName,
+            2 => DesktopAudioKey,
+            > 2 when index - 3 < _windows.Count => _windows[index - 3].ProcessName,
             _ => CapturedWindowAudioKey,
         };
     }
@@ -300,7 +313,7 @@ internal sealed class SourceSelectionModel
             return SourceSelectionApplyFailure.MonitorUnavailable;
         if (selection.Kind == SourceKind.CaptureDevice && captureDevice is null)
             return SourceSelectionApplyFailure.CaptureDeviceUnavailable;
-        if (selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey) &&
+        if (selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) &&
             !_windows.Any(candidate => AudioIdentityEquals(candidate.ProcessName, selection.AudioKey)))
             return SourceSelectionApplyFailure.AudioUnavailable;
 
@@ -336,7 +349,7 @@ internal sealed class SourceSelectionModel
 
     private void NormalizeAudioSelection()
     {
-        if (_audioKey is NoAudioKey or CapturedWindowAudioKey) return;
+        if (_audioKey is NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) return;
         if (!_windows.Any(window => AudioIdentityEquals(window.ProcessName, _audioKey)))
             _audioKey = CapturedWindowAudioKey;
     }

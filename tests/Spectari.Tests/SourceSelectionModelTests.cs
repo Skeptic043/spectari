@@ -78,15 +78,41 @@ public sealed class SourceSelectionModelTests
         Assert.Equal("DISPLAY-A  2560x1440  (primary)", Assert.Single(model.MonitorDisplayItems));
         Assert.Equal("No audio", model.AudioDisplayItems[0]);
         Assert.Equal("Captured window's audio", model.AudioDisplayItems[1]);
-        Assert.Equal("game - Game title", model.AudioDisplayItems[2]);
+        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
+        Assert.Equal("game - Game title", model.AudioDisplayItems[3]);
 
         model.SelectKind(SourceKind.Monitor);
 
         Assert.Equal("No audio (monitor share: pick an app below)", model.AudioDisplayItems[1]);
+        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
 
         model.SelectKind(SourceKind.CaptureDevice);
 
         Assert.Equal("No audio (capture device share: pick an app below)", model.AudioDisplayItems[1]);
+        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
+        Assert.Equal(0u, model.SelectedAudioPid);
+    }
+
+    [Fact]
+    public void DesktopAudioKeyPersistsWithoutAWindowAndDoesNotCollideWithProcessKeys()
+    {
+        var model = Model(() => [Window(1, "mode", 11)], () => []);
+        model.RefreshAll();
+
+        model.SelectAudioIndex(2);
+        string persistedKey = model.AudioKey;
+        model.RefreshWindows();
+        var restored = Model(() => [], () => []);
+        restored.RefreshAll();
+        restored.SelectAudioKey(persistedKey);
+
+        Assert.Equal(SourceSelectionModel.DesktopAudioKey, persistedKey);
+        Assert.Equal("mode:desktop", persistedKey);
+        Assert.Equal(2, model.SelectedAudioIndex);
+        Assert.Equal(2, restored.SelectedAudioIndex);
+        Assert.True(model.IsDesktopAudioSelected);
+        Assert.True(restored.IsDesktopAudioSelected);
+        Assert.False(model.IsSelectedAudioProcessUnavailable);
         Assert.Equal(0u, model.SelectedAudioPid);
     }
 
@@ -152,7 +178,7 @@ public sealed class SourceSelectionModelTests
         model.RefreshAll();
         model.SelectWindowIndex(1);
         model.SelectMonitorIndex(1);
-        model.SelectAudioIndex(3);
+        model.SelectAudioIndex(4);
 
         windows = [Window(1, "Alpha", 11)];
         monitors = [Monitor(10, "DISPLAY-A")];
@@ -183,7 +209,7 @@ public sealed class SourceSelectionModelTests
         dialog.SelectKind(SourceKind.Monitor);
         dialog.SelectWindowIndex(1);
         dialog.SelectMonitorIndex(1);
-        dialog.SelectAudioIndex(3);
+        dialog.SelectAudioIndex(4);
 
         windows =
         [
@@ -220,7 +246,7 @@ public sealed class SourceSelectionModelTests
         model.SelectAudioIndex(0);
         SourceSelectionModel dialog = model.CreateFreshSnapshot();
         dialog.SelectWindowIndex(1);
-        dialog.SelectAudioIndex(3);
+        dialog.SelectAudioIndex(4);
 
         windows = [Window(1, "Alpha", 11)];
         model.RefreshWindows();
