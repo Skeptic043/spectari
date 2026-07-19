@@ -139,7 +139,7 @@ internal static class Program
         };
     }
 
-    /// <summary>Fatal-exception exit (Brian's decision): don't resume the message
+    /// <summary>Fatal-exception exit: don't resume the message
     /// loop into a half-broken app. Stop any live session gracefully - bounded, so a
     /// wedged session can't hang shutdown; ChildJob kills ffmpeg with the process
     /// regardless - then exit nonzero. The UI-thread handler already stops the session
