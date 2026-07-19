@@ -117,6 +117,15 @@ entirely, which is one reason sharing is the default recommendation.
 Tailscale specifics beyond that (ACLs and so on) are documented by
 Tailscale and out of scope here.
 
+### Other networks (advanced)
+
+Under the hood Spectari just serves the stream on an IP and port, so Tailscale
+is not the only way to reach it. Anyone comfortable with their own networking
+can point viewers at any reachable IP and port. A self-hosted VPN such as
+WireGuard behaves just like Tailscale: turn on "Allow LAN viewers" and send the
+full link. Port forwarding works too, though it puts the stream on the public
+internet behind only the per-stream key, so weigh that before opening it up.
+
 ## Watching several streams at once
 
 The grid tiles multiple streams in one browser tab. Open
