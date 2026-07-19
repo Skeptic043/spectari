@@ -27,6 +27,7 @@ public sealed class WatchForm : Form
     private readonly System.Windows.Forms.Timer _discoveryTimer = new() { Interval = 30_000 };
     private readonly CancellationTokenSource _closeCts = new();
     private readonly HashSet<string> _observedSessions = new(StringComparer.Ordinal);
+    private WatchAudioSessionConsolidator? _audioSessions;
     private bool _finding;
     private bool _webReady;
     private bool _searchedOnce;
@@ -74,6 +75,7 @@ public sealed class WatchForm : Form
         if (disposing)
         {
             StopDiscovery();
+            _audioSessions?.Dispose();
             _discoveryTimer.Dispose();
         }
         base.Dispose(disposing);
@@ -108,6 +110,7 @@ public sealed class WatchForm : Form
             if (_closeCts.IsCancellationRequested || IsDisposed || Disposing) return;
             await _web.EnsureCoreWebView2Async(env);
             if (_closeCts.IsCancellationRequested || IsDisposed || Disposing) return;
+            _audioSessions = new WatchAudioSessionConsolidator(env, _web.CoreWebView2);
             _web.CoreWebView2.SetVirtualHostNameToFolderMapping(
                 "spectari.local", Path.Combine(AppContext.BaseDirectory, "wwwroot"),
                 CoreWebView2HostResourceAccessKind.Allow);
