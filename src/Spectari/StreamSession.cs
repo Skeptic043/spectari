@@ -13,6 +13,7 @@ public sealed record SessionConfig
 {
     public IntPtr MonitorHandle { get; init; }
     public IntPtr WindowHandle { get; init; }
+    public string CaptureDeviceSymbolicLink { get; init; } = "";
     public string SourceName { get; init; } = "";
 
     /// <summary>Display name shown to viewers (grid tiles, viewer tab title).
@@ -190,14 +191,17 @@ public sealed class StreamSession
         // standard capture as fallback and for window shares - see
         // AutoMonitorCapture). --compat-capture forces duplication-only,
         // kept for diagnostics.
+        bool captureDeviceSelected = !string.IsNullOrEmpty(_config.CaptureDeviceSymbolicLink);
         ICaptureSource capture;
         try
         {
-            capture = _config.WindowHandle != IntPtr.Zero
-                ? ScreenCapture.ForWindow(_config.WindowHandle)
-                : _config.CompatibilityCapture
-                    ? new DuplicationCapture(_config.MonitorHandle)
-                    : new AutoMonitorCapture(_config.MonitorHandle);
+            capture = captureDeviceSelected
+                ? new MediaFoundationCapture(_config.CaptureDeviceSymbolicLink)
+                : _config.WindowHandle != IntPtr.Zero
+                    ? ScreenCapture.ForWindow(_config.WindowHandle)
+                    : _config.CompatibilityCapture
+                        ? new DuplicationCapture(_config.MonitorHandle)
+                        : new AutoMonitorCapture(_config.MonitorHandle);
         }
         catch (CaptureTargetUnavailableException ex)
         {
@@ -208,6 +212,7 @@ public sealed class StreamSession
         _captureAdapter = new(capture.GpuVendorId, capture.AdapterLuid, capture.DriverVersion);
         if (_config.NoCursor) capture.CursorEnabled = false;
         Console.WriteLine($"[capture] {_config.SourceName} @ {capture.Width}x{capture.Height}, GPU vendor 0x{capture.GpuVendorId:X4}{(_config.NoCursor ? ", cursor off" : "")}");
+        int fps = capture.FrameRate ?? _config.Fps;
 
         int outW, outH;
         if (_config.OutHeight > 0 && _config.OutHeight < capture.Height)
@@ -229,9 +234,9 @@ public sealed class StreamSession
 
         // 0 = auto: scale bitrate with what actually goes out. A "Native" preset
         // used to hardcode 12 Mbps even when native meant 1440p or 4K.
-        int bitrateKbps = _config.BitrateKbps > 0 ? _config.BitrateKbps : AutoBitrate(outW, outH, _config.Fps);
+        int bitrateKbps = _config.BitrateKbps > 0 ? _config.BitrateKbps : AutoBitrate(outW, outH, fps);
         if (_config.BitrateKbps <= 0)
-            Console.WriteLine($"[encoder] auto bitrate for {outH}p{_config.Fps}: {bitrateKbps} kbps");
+            Console.WriteLine($"[encoder] auto bitrate for {outH}p{fps}: {bitrateKbps} kbps");
 
         string? audioPipeName = _config.AudioPid != 0 ? $"spectari_audio_{_config.Port}" : null;
         NamedPipeServerStream? audioPipe = null;
@@ -264,7 +269,7 @@ public sealed class StreamSession
             finally { SetTeardownStage("audio stopped"); }
         });
 
-        var ffmpeg = new FfmpegEncoder(capture.Width, capture.Height, _config.Fps,
+        var ffmpeg = new FfmpegEncoder(capture.Width, capture.Height, fps,
             bitrateKbps, outW, outH, encoder, audioPipeName, _config.FragMs);
         using var ffmpegLifetime = TrackCleanup(ffmpeg.Dispose, "ffmpeg");
 
@@ -278,7 +283,7 @@ public sealed class StreamSession
         {
             Width = outW,
             Height = outH,
-            Fps = _config.Fps,
+            Fps = fps,
             MaxViewers = _config.MaxViewers,
             HasAudio = audioPipeName is not null,
             StreamName = string.IsNullOrWhiteSpace(_config.StreamName)
@@ -294,10 +299,9 @@ public sealed class StreamSession
         if (LocalOnly)
             Console.Error.WriteLine($"[http] THIS PC ONLY: remote viewers will get HTTP 400. Run setup.bat {_config.Port} as administrator, then restart the stream.");
 
-        // First-frame gate: Windows capture always delivers the current contents
-        // immediately on start, so "no frame within 5s" reliably means the capture
-        // backend is broken on this machine - fail loudly instead of looking live.
-        Description = $"{outW}x{outH}@{_config.Fps} ~{bitrateKbps}kbps";
+        // A source that cannot produce its first frame must fail before the server
+        // reports live, so a disconnected device or broken desktop backend is visible.
+        Description = $"{outW}x{outH}@{fps} ~{bitrateKbps}kbps";
         var gateStart = Stopwatch.GetTimestamp();
         while (capture.FrameVersion == 0)
         {
@@ -309,9 +313,13 @@ public sealed class StreamSession
                 broadcaster.State = "failed";
                 Console.Error.WriteLine("[capture] no frames received within 5 seconds.");
                 Console.Error.WriteLine($"[capture] backend started but never delivered a frame; source: {_config.SourceName}, adapter: {capture.AdapterName}.");
-                Console.Error.WriteLine("[capture] worth trying: a different source, the compatibility capture option, or a GPU driver update.");
+                Console.Error.WriteLine(captureDeviceSelected
+                    ? "[capture] worth trying: reconnect the device, close other apps using it, or pick another device."
+                    : "[capture] worth trying: a different source, the compatibility capture option, or a GPU driver update.");
                 Console.Error.WriteLine("[capture] when reporting this, use Copy log in the app; the log file path is printed at startup.");
-                return "no frames from screen capture; see log";
+                return captureDeviceSelected
+                    ? "no frames from capture device; see log"
+                    : "no frames from screen capture; see log";
             }
             Thread.Sleep(100);
         }
@@ -383,7 +391,7 @@ public sealed class StreamSession
         string exitReason;
         try
         {
-            exitReason = PacingLoop(capture, ffmpeg, writer, broadcaster, splitterTask, serverTask, ct);
+            exitReason = PacingLoop(capture, ffmpeg, writer, broadcaster, splitterTask, serverTask, fps, ct);
         }
         finally
         {
@@ -585,12 +593,11 @@ public sealed class StreamSession
     }
 
     private string PacingLoop(ICaptureSource capture, FfmpegEncoder ffmpeg, FrameWriter writer,
-        Broadcaster broadcaster, Task splitterTask, Task serverTask, CancellationToken ct)
+        Broadcaster broadcaster, Task splitterTask, Task serverTask, int fps, CancellationToken ct)
     {
         using var timer = new HighResTimer();
         if (!timer.IsHighResolution)
             Console.WriteLine("[pacing] WARNING: high-resolution timer unavailable, falling back to Sleep()");
-        int fps = _config.Fps;
         long ticksPerFrame = Stopwatch.Frequency / fps;
         int graceMs = Math.Max(1000 / fps * 2 / 5, 2);
         long next = Stopwatch.GetTimestamp() + ticksPerFrame;

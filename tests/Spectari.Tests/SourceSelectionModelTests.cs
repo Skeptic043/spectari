@@ -43,6 +43,30 @@ public sealed class SourceSelectionModelTests
     }
 
     [Fact]
+    public void RefreshPreservesCaptureDeviceSymbolicLinkAcrossReordering()
+    {
+        List<CaptureDeviceDescription> devices =
+        [
+            Device("device-a", "Alpha"),
+            Device("device-b", "Bravo"),
+        ];
+        var model = Model(() => [], () => [], () => devices);
+        model.RefreshAll();
+        model.SelectCaptureDeviceIndex(1);
+
+        devices =
+        [
+            Device("device-b", "Bravo"),
+            Device("device-c", "Aardvark"),
+            Device("device-a", "Alpha"),
+        ];
+        model.RefreshAll();
+
+        Assert.Equal("device-b", model.SelectedCaptureDevice?.SymbolicLink);
+        Assert.Equal(2, model.SelectedCaptureDeviceIndex);
+    }
+
+    [Fact]
     public void FormatsPickerAndAudioDisplayStrings()
     {
         var window = Window(1, "game", 11, "Game title");
@@ -59,6 +83,11 @@ public sealed class SourceSelectionModelTests
         model.SelectKind(SourceKind.Monitor);
 
         Assert.Equal("No audio (monitor share: pick an app below)", model.AudioDisplayItems[1]);
+
+        model.SelectKind(SourceKind.CaptureDevice);
+
+        Assert.Equal("No audio (capture device share: pick an app below)", model.AudioDisplayItems[1]);
+        Assert.Equal(0u, model.SelectedAudioPid);
     }
 
     [Fact]
@@ -203,10 +232,41 @@ public sealed class SourceSelectionModelTests
         Assert.Equal(before, model.CurrentSelection);
     }
 
+    [Fact]
+    public void DisappearedCaptureDeviceRejectsWithoutPartialSelectionWrite()
+    {
+        List<CaptureDeviceDescription> devices =
+        [
+            Device("device-a", "Alpha"),
+            Device("device-b", "Bravo"),
+        ];
+        var model = Model(() => [], () => [], () => devices);
+        model.RefreshAll();
+        SourceSelectionModel dialog = model.CreateFreshSnapshot();
+        dialog.SelectKind(SourceKind.CaptureDevice);
+        dialog.SelectCaptureDeviceIndex(1);
+
+        devices = [Device("device-a", "Alpha")];
+        model.RefreshCaptureDevices();
+        Assert.Equal("device-a", model.SelectedCaptureDevice?.SymbolicLink);
+        SourceSelection before = model.CurrentSelection;
+
+        SourceSelectionApplyFailure result = model.TryApplySelection(dialog.CurrentSelection);
+
+        Assert.Equal(SourceSelectionApplyFailure.CaptureDeviceUnavailable, result);
+        Assert.Equal(before, model.CurrentSelection);
+    }
+
     private static SourceSelectionModel Model(
         Func<List<WindowDescription>> windows,
         Func<List<MonitorDescription>> monitors,
         uint ownPid = 999) => new(windows, monitors, ownPid);
+
+    private static SourceSelectionModel Model(
+        Func<List<WindowDescription>> windows,
+        Func<List<MonitorDescription>> monitors,
+        Func<List<CaptureDeviceDescription>> captureDevices,
+        uint ownPid = 999) => new(windows, monitors, captureDevices, ownPid);
 
     private static WindowDescription Window(
         int handle,
@@ -219,4 +279,7 @@ public sealed class SourceSelectionModelTests
 
     private static MonitorDescription Monitor(int handle, string deviceName) =>
         new(new IntPtr(handle), deviceName, 1920, 1080, false);
+
+    private static CaptureDeviceDescription Device(string symbolicLink, string friendlyName) =>
+        new(symbolicLink, friendlyName);
 }
