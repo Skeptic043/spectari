@@ -387,7 +387,7 @@ public sealed class MainForm : Form
                 if (_closing || IsDisposed || Disposing) return;
                 BeginInvoke(action);
             },
-            AppendLog);
+            ConsoleMirror.WriteClassifiedLine);
         _shareLinks = new ShareLinkResolver(_hostAccess);
         _hostAccess.SetupStarted += _ => SetHostAccessControlsEnabled(false);
         _hostAccess.SetupCompleted += RenderHostAccessSetupResult;
@@ -401,7 +401,7 @@ public sealed class MainForm : Form
                 BeginInvoke(action);
             },
             name => _uiHangWatchdog?.TrackOperation(name),
-            AppendLog));
+            ConsoleMirror.WriteClassifiedLine));
         _streamController.StateChanged += RenderStreamState;
         _streamController.SessionStarted += RenderStartedStream;
         _captureDeviceChanges = new CaptureDeviceChangeMonitor();
@@ -986,9 +986,8 @@ public sealed class MainForm : Form
         // Resolve the audio source: none / follow captured window / desktop / a specific app.
         // "Captured window's audio" during a monitor share resolves to no audio.
         uint audioPid = _sourceSelection.SelectedAudioPid;
-        string audioKey = _sourceSelection.AudioKey;
         if (_sourceSelection.IsSelectedAudioProcessUnavailable)
-            AppendLog($"[audio] '{audioKey}' is not running; streaming without audio");
+            AppendLog("[audio] The selected audio source is not running; streaming without audio.");
 
         IntPtr windowHandle = IntPtr.Zero, monitorHandle = IntPtr.Zero;
         string captureDeviceSymbolicLink = "";
@@ -1405,7 +1404,7 @@ public sealed class MainForm : Form
             StreamController.SourceSwitchTrigger,
             () =>
             {
-                AppendLog($"Switching to {config.SourceName}. Viewers reconnect automatically.");
+                AppendLog("Switching sources. Viewers reconnect automatically.");
                 SaveSettings();
             });
     }
@@ -1733,17 +1732,15 @@ public sealed class MainForm : Form
         try
         {
             Clipboard.SetText(url);
-            AppendLog($"Copied: {RedactKey(url)}" + (url.Contains("://100.") ? "  (Tailscale)" : ""));
+            AppendLog(url.Contains("://100.", StringComparison.Ordinal)
+                ? "Copied Tailscale link."
+                : "Copied viewer link.");
         }
         catch (Exception ex)
         {
-            AppendLog($"Clipboard failed ({ex.Message}); link: {RedactKey(url)}");
+            AppendLog($"Clipboard failed ({ex.Message}).");
         }
     }
-
-    // Delegate to the bundle scrubber so there is ONE key alphabet everywhere.
-    // The old \w+ pattern dropped a hyphen in base64url keys, leaking the suffix.
-    private static string RedactKey(string text) => Util.BundleScrubber.RedactKeyParam(text);
 
     /// <summary>Relaunches this exe elevated to reserve the URL and open the
     /// firewall for the current port (same steps as setup.bat), then restarts
@@ -1858,22 +1855,25 @@ public sealed class MainForm : Form
             sb.AppendLine($"enc expected: {diagnostics.expected}  ({diagnostics.gpuSource}, adapter LUID {diagnostics.gpu.luid}, driver {diagnostics.gpu.driver})");
             sb.AppendLine($"session:  {DescribeSessionState()}");
             sb.AppendLine($"settings: {ReadSmallFile(SettingsPath)}");
-            sb.AppendLine("---- last 200 log lines ----");
-            // Prefer the on-disk log: it carries per-line timestamps (the box
-            // does not), which is what makes a stall report diagnosable.
-            string[] lines = ReadLogTail(200) ?? _logBox.Lines;
-            foreach (string line in lines.Skip(Math.Max(0, lines.Length - 200)))
+            sb.AppendLine("---- last 200 operator events ----");
+            string[] lines = ConsoleMirror.GetOperatorLines(200);
+            foreach (string line in lines)
                 sb.AppendLine(line);
-            // Scrub the WHOLE blob in one place - keys, Tailscale IPs, and the
-            // username/paths across every line - right before it hits the
-            // clipboard and, from there, a public issue. The live keys are passed
-            // as exact secrets so a raw key without a ?k= wrapper is caught too.
             string scrubbed = Util.BundleScrubber.Scrub(sb.ToString(),
                 new[]
                 {
                     _streamController.CurrentSession?.ViewKey,
                     _streamController.LastConfig?.ViewKey,
                     _pendingKey,
+                },
+                new[]
+                {
+                    _streamController.LastConfig?.SourceName,
+                    _streamController.LastConfig?.StreamName,
+                    _nameInput.Text,
+                    _sourceSelection.SelectedWindow?.Title,
+                    _sourceSelection.SelectedMonitor?.DeviceName,
+                    _sourceSelection.SelectedCaptureDevice?.SymbolicLink,
                 });
             Clipboard.SetText(scrubbed);
             AppendLog("Log copied (scrubbed, with version, system, and encoder info); paste it into a bug report.");
@@ -2063,25 +2063,6 @@ public sealed class MainForm : Form
         catch { return "(unreadable)"; }
     }
 
-    /// <summary>Last N lines of the timestamped log file, or null if it can't be
-    /// read (the caller then falls back to the on-screen log box). Opens shared
-    /// for read/write because ConsoleMirror still has the file open.</summary>
-    private static string[]? ReadLogTail(int count)
-    {
-        try
-        {
-            string? path = ConsoleMirror.LogFilePath;
-            if (path is null || !File.Exists(path)) return null;
-            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-            using var reader = new StreamReader(fs);
-            var all = new List<string>();
-            string? line;
-            while ((line = reader.ReadLine()) is not null) all.Add(line);
-            return all.Skip(Math.Max(0, all.Count - count)).ToArray();
-        }
-        catch { return null; }
-    }
-
     // ---- settings ---------------------------------------------------------
 
     private void LoadSettings()
@@ -2190,7 +2171,7 @@ public sealed class MainForm : Form
         catch { }
     }
 
-    private static void AppendLog(string line) => Console.WriteLine(line);
+    private static void AppendLog(string line) => ConsoleMirror.WriteOperatorLine(line);
 
     private void AppendLogToUi(string line)
     {
