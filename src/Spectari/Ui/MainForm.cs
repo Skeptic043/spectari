@@ -991,6 +991,8 @@ public sealed class MainForm : Form
             AppendLog("[audio] The selected audio source is not running; streaming without audio.");
 
         IntPtr windowHandle = IntPtr.Zero, monitorHandle = IntPtr.Zero;
+        string windowProcessName = "";
+        uint windowProcessId = 0;
         string captureDeviceSymbolicLink = "";
         string sourceName;
         if (_sourceSelection.Kind == SourceKind.Window)
@@ -1004,6 +1006,8 @@ public sealed class MainForm : Form
                 return null;
             }
             windowHandle = w.Handle;
+            windowProcessName = w.ProcessName;
+            windowProcessId = w.Pid;
             sourceName = $"window '{w.Title}' [{w.ProcessName}]";
         }
         else if (_sourceSelection.Kind == SourceKind.Monitor)
@@ -1027,6 +1031,8 @@ public sealed class MainForm : Form
         return new SessionConfig
         {
             WindowHandle = windowHandle,
+            WindowProcessName = windowProcessName,
+            WindowProcessId = windowProcessId,
             MonitorHandle = monitorHandle,
             CaptureDeviceSymbolicLink = captureDeviceSymbolicLink,
             SourceName = sourceName,
@@ -1648,6 +1654,14 @@ public sealed class MainForm : Form
             return;
         }
         _streamController.MarkLive();
+        if (b.WaitingForWindow)
+        {
+            _statusLabel.ForeColor = Color.Goldenrod;
+            _statusLabel.Text =
+                $"LIVE, WAITING FOR WINDOW: the shared window is gone. Viewers: {b.ViewerCount}";
+            Text = $"Spectari - LIVE ({b.ViewerCount} watching)";
+            return;
+        }
         ShareReachability reachability = _shareLinks.ResolveReachability(
             _livePort,
             session!.LocalOnly);
