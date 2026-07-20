@@ -232,6 +232,7 @@ internal static class Program
     {
         EnsureConsole();
         Util.ConsoleMirror.Install();
+        Util.ConsoleMirror.EnableViewerLinksInConsole();
         // Migration ran before any sink existed; land its outcome in the log.
         if (Util.AppPaths.MigrationNote is { } note) Console.WriteLine(note);
 
@@ -239,8 +240,8 @@ internal static class Program
         try { opts = Options.Parse(args); }
         catch (ArgumentException ex)
         {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            Console.Error.WriteLine("Run Spectari --help for usage.");
+            Util.ConsoleMirror.WriteTransientErrorLine($"Error: {ex.Message}");
+            Util.ConsoleMirror.WriteTransientErrorLine("Run Spectari --help for usage.");
             return 2;
         }
         if (opts.ShowHelp) { PrintHelp(); return 0; }
@@ -249,14 +250,14 @@ internal static class Program
         {
             Console.WriteLine("Windows:");
             foreach (var w in WindowEnumerator.GetWindows())
-                Console.WriteLine($"  [{w.ProcessName}] {w.Title}");
+                Util.ConsoleMirror.WriteTransientLine($"  [{w.ProcessName}] {w.Title}");
             return 0;
         }
 
         var monitors = MonitorEnumerator.GetMonitors();
         Console.WriteLine("Monitors:");
         for (int i = 0; i < monitors.Count; i++)
-            Console.WriteLine($"  [{i}] {monitors[i].DeviceName} {monitors[i].Width}x{monitors[i].Height}{(monitors[i].IsPrimary ? " (primary)" : "")}");
+            Util.ConsoleMirror.WriteTransientLine($"  [{i}] {monitors[i].DeviceName} {monitors[i].Width}x{monitors[i].Height}{(monitors[i].IsPrimary ? " (primary)" : "")}");
         if (opts.ListMonitors) return 0;
 
         IntPtr monitorHandle = IntPtr.Zero, windowHandle = IntPtr.Zero;
@@ -267,7 +268,7 @@ internal static class Program
             var window = WindowEnumerator.FindByTitle(opts.Window);
             if (window is null)
             {
-                Console.Error.WriteLine($"No visible window matching '{opts.Window}' (try --list-windows).");
+                Util.ConsoleMirror.WriteTransientErrorLine($"No visible window matching '{opts.Window}' (try --list-windows).");
                 return 1;
             }
             windowHandle = window.Handle;
@@ -291,7 +292,7 @@ internal static class Program
             var match = WindowEnumerator.FindByTitle(opts.Audio);
             if (match is null)
             {
-                Console.Error.WriteLine($"No window/process matching '{opts.Audio}' for audio (try --list-windows).");
+                Util.ConsoleMirror.WriteTransientErrorLine($"No window/process matching '{opts.Audio}' for audio (try --list-windows).");
                 return 1;
             }
             audioPid = match.Pid;

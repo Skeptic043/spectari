@@ -2,14 +2,18 @@ using System.Text;
 
 namespace Spectari.Util;
 
-/// <summary>
-/// Tees Console.Out/Error line-by-line to an event so the UI log box can show
-/// everything the pipeline logs, while console/redirected output keeps working.
-/// </summary>
+/// <summary>Routes console output to the sanitized diagnostic file and the
+/// smaller operator event stream while preserving normal console output.</summary>
 public static class ConsoleMirror
 {
     public static event Action<string>? LineWritten;
+    private const int OperatorHistoryLimit = 500;
+    private static readonly Lock SinkGate = new();
+    private static readonly Queue<string> OperatorHistory = new();
     private static StreamWriter? _logFile;
+    private static TextWriter? _originalOut;
+    private static TextWriter? _originalError;
+    internal static bool ShowViewerLinksInConsole { get; private set; }
     public static string? LogFilePath { get; private set; }
 
     public static void Install(bool withLogFile = true)
@@ -28,10 +32,71 @@ public static class ConsoleMirror
             }
             catch { _logFile = null; }
         }
-        Console.SetOut(new TeeWriter(Console.Out));
-        Console.SetError(new TeeWriter(Console.Error));
+        _originalOut = Console.Out;
+        _originalError = Console.Error;
+        Console.SetOut(new TeeWriter(_originalOut));
+        Console.SetError(new TeeWriter(_originalError));
         if (LogFilePath is not null)
-            Console.WriteLine($"[log] writing to {LogFilePath}");
+            WriteTransientLine($"[log] writing to {LogFilePath}");
+    }
+
+    /// <summary>Writes an explicitly operator-facing event through both safe
+    /// sinks without asking the text classifier to infer its audience.</summary>
+    public static void WriteOperatorLine(string line)
+    {
+        string safeLine = BundleScrubber.Scrub(line);
+        (_originalOut ?? Console.Out).WriteLine(safeLine);
+        PublishSafeLine(safeLine, showToOperator: true);
+    }
+
+    /// <summary>Writes a component event after applying the shared audience
+    /// classification policy.</summary>
+    public static void WriteClassifiedLine(string line)
+    {
+        string safeLine = BundleScrubber.Scrub(line);
+        (_originalOut ?? Console.Out).WriteLine(safeLine);
+        PublishSafeLine(safeLine,
+            LogEventClassifier.Classify(line) == LogAudience.OperatorAndDiagnostic);
+    }
+
+    /// <summary>Writes CLI-only output that must not enter either log sink.</summary>
+    public static void WriteTransientLine(string line) =>
+        (_originalOut ?? Console.Out).WriteLine(line);
+
+    /// <summary>Writes CLI-only error output that must not enter either log sink.</summary>
+    public static void WriteTransientErrorLine(string line) =>
+        (_originalError ?? Console.Error).WriteLine(line);
+
+    internal static void EnableViewerLinksInConsole() => ShowViewerLinksInConsole = true;
+
+    public static string[] GetOperatorLines(int count)
+    {
+        lock (SinkGate)
+            return OperatorHistory.Skip(Math.Max(0, OperatorHistory.Count - count)).ToArray();
+    }
+
+    private static void PublishLine(string line)
+    {
+        string safeLine = BundleScrubber.Scrub(line);
+        PublishSafeLine(safeLine,
+            LogEventClassifier.Classify(line) == LogAudience.OperatorAndDiagnostic);
+    }
+
+    private static void PublishSafeLine(string safeLine, bool showToOperator)
+    {
+        Action<string>? handler = null;
+        lock (SinkGate)
+        {
+            try { _logFile?.WriteLine($"{DateTime.Now:HH:mm:ss} {safeLine}"); } catch { }
+            if (showToOperator)
+            {
+                OperatorHistory.Enqueue(safeLine);
+                while (OperatorHistory.Count > OperatorHistoryLimit)
+                    OperatorHistory.Dequeue();
+                handler = LineWritten;
+            }
+        }
+        handler?.Invoke(safeLine);
     }
 
     private sealed class TeeWriter(TextWriter inner) : TextWriter
@@ -49,8 +114,7 @@ public static class ConsoleMirror
                 if (value == '\n')
                 {
                     string line = _line.ToString().TrimEnd('\r');
-                    try { _logFile?.WriteLine($"{DateTime.Now:HH:mm:ss} {line}"); } catch { }
-                    LineWritten?.Invoke(line);
+                    PublishLine(line);
                     _line.Clear();
                 }
                 else

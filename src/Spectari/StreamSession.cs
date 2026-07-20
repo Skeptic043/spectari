@@ -207,7 +207,7 @@ public sealed class StreamSession
         using var captureLifetime = TrackCleanup(capture.Dispose, "capture");
         _captureAdapter = new(capture.GpuVendorId, capture.AdapterLuid, capture.DriverVersion);
         if (_config.NoCursor) capture.CursorEnabled = false;
-        Console.WriteLine($"[capture] {_config.SourceName} @ {capture.Width}x{capture.Height}, GPU vendor 0x{capture.GpuVendorId:X4}{(_config.NoCursor ? ", cursor off" : "")}");
+        Console.WriteLine($"[capture] selected source @ {capture.Width}x{capture.Height}, GPU vendor 0x{capture.GpuVendorId:X4}{(_config.NoCursor ? ", cursor off" : "")}");
         int fps = capture.FrameRate ?? _config.Fps;
 
         int outW, outH;
@@ -281,7 +281,7 @@ public sealed class StreamSession
             {
                 broadcaster.State = "failed";
                 Console.Error.WriteLine("[capture] no frames received within 5 seconds.");
-                Console.Error.WriteLine($"[capture] backend started but never delivered a frame; source: {_config.SourceName}, adapter: {capture.AdapterName}.");
+                Console.Error.WriteLine($"[capture] backend started but never delivered a frame; adapter: {capture.AdapterName}.");
                 Console.Error.WriteLine(captureDeviceSelected
                     ? "[capture] worth trying: reconnect the device, close other apps using it, or pick another device."
                     : "[capture] worth trying: a different source, the compatibility capture option, or a GPU driver update.");
@@ -295,22 +295,18 @@ public sealed class StreamSession
 
         broadcaster.State = "live";
         WentLive = true;
-        // Console users have no other way to get the link, so the key is printed
-        // (and therefore lands in the log file) - the support bundle strips it.
         Console.WriteLine($"[ready] first frame captured; streaming {Description} via {encoder}");
-        Console.WriteLine($"[ready] watch at: {ShareLinkResolver.BuildViewerUrl("localhost", _config.Port, "", _config.ViewKey)}");
-        // Tailscale addresses are in scope in every firewall config, so they are
-        // always live. LAN addresses only work if LAN access was actually opened;
-        // console mode has no persisted scope, so the honest form is a caveat.
-        var shareAddrs = ShareLinkResolver.GetShareAddresses();
-        foreach (var ip in shareAddrs.Where(ShareLinkResolver.IsTailscaleAddress))
-            Console.WriteLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
-        var lanAddrs = shareAddrs.Where(ip => !ShareLinkResolver.IsTailscaleAddress(ip)).ToList();
-        if (lanAddrs.Count > 0)
+        if (ConsoleMirror.ShowViewerLinksInConsole)
         {
-            Console.WriteLine($"[ready] the LAN links below only work if you allowed LAN access (setup.bat or Open port with Allow LAN):");
+            ConsoleMirror.WriteTransientLine($"[ready] watch at: {ShareLinkResolver.BuildViewerUrl("localhost", _config.Port, "", _config.ViewKey)}");
+            var shareAddrs = ShareLinkResolver.GetShareAddresses();
+            foreach (var ip in shareAddrs.Where(ShareLinkResolver.IsTailscaleAddress))
+                ConsoleMirror.WriteTransientLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
+            var lanAddrs = shareAddrs.Where(ip => !ShareLinkResolver.IsTailscaleAddress(ip)).ToList();
+            if (lanAddrs.Count > 0)
+                ConsoleMirror.WriteTransientLine("[ready] the LAN links below only work if you allowed LAN access (setup.bat or Open port with Allow LAN):");
             foreach (var ip in lanAddrs)
-                Console.WriteLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
+                ConsoleMirror.WriteTransientLine($"[ready]           {ShareLinkResolver.BuildViewerUrl(ip, _config.Port, "", _config.ViewKey)}");
         }
 
         // Independent output watchdog. It runs for the whole session because a
