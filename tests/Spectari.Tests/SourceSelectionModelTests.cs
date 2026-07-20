@@ -178,21 +178,93 @@ public sealed class SourceSelectionModelTests
 
         Assert.Equal("game - Game title", Assert.Single(model.WindowDisplayItems));
         Assert.Equal("DISPLAY-A  2560x1440  (primary)", Assert.Single(model.MonitorDisplayItems));
-        Assert.Equal("No audio", model.AudioDisplayItems[0]);
-        Assert.Equal("Captured window's audio", model.AudioDisplayItems[1]);
-        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
-        Assert.Equal("game - Game title", model.AudioDisplayItems[3]);
+        Assert.Equal(
+            [
+                "No audio",
+                "Captured window's audio",
+                "Desktop audio (all sound)",
+                "game - Game title",
+            ],
+            model.AudioDisplayItems);
 
         model.SelectKind(SourceKind.Monitor);
 
-        Assert.Equal("No audio (monitor share: pick an app below)", model.AudioDisplayItems[1]);
-        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
+        Assert.Equal(
+            [
+                "No audio (monitor share: pick an app below)",
+                "Desktop audio (all sound)",
+                "game - Game title",
+            ],
+            model.AudioDisplayItems);
 
         model.SelectKind(SourceKind.CaptureDevice);
 
-        Assert.Equal("No audio (capture device share: pick an app below)", model.AudioDisplayItems[1]);
-        Assert.Equal("Desktop audio (all sound)", model.AudioDisplayItems[2]);
+        Assert.Equal(
+            [
+                "No audio (capture device share: pick an app below)",
+                "Desktop audio (all sound)",
+                "game - Game title",
+            ],
+            model.AudioDisplayItems);
         Assert.Equal(0u, model.SelectedAudioPid);
+    }
+
+    [Theory]
+    [InlineData((int)SourceKind.Window, 0, SourceSelectionModel.NoAudioKey)]
+    [InlineData((int)SourceKind.Window, 1, SourceSelectionModel.CapturedWindowAudioKey)]
+    [InlineData((int)SourceKind.Window, 2, SourceSelectionModel.DesktopAudioKey)]
+    [InlineData((int)SourceKind.Window, 3, "game")]
+    [InlineData((int)SourceKind.Monitor, 0, SourceSelectionModel.NoAudioKey)]
+    [InlineData((int)SourceKind.Monitor, 1, SourceSelectionModel.DesktopAudioKey)]
+    [InlineData((int)SourceKind.Monitor, 2, "game")]
+    [InlineData((int)SourceKind.CaptureDevice, 0, SourceSelectionModel.NoAudioKey)]
+    [InlineData((int)SourceKind.CaptureDevice, 1, SourceSelectionModel.DesktopAudioKey)]
+    [InlineData((int)SourceKind.CaptureDevice, 2, "game")]
+    public void AudioSelectionIndexesMapToDisplayedItems(
+        int kindValue,
+        int selectedIndex,
+        string expectedKey)
+    {
+        var model = Model(() => [Window(1, "game", 11)], () => []);
+        model.RefreshAll();
+        model.SelectKind((SourceKind)kindValue);
+
+        model.SelectAudioIndex(selectedIndex);
+
+        Assert.Equal(expectedKey, model.AudioKey);
+        Assert.Equal(selectedIndex, model.SelectedAudioIndex);
+    }
+
+    [Theory]
+    [InlineData(SourceSelectionModel.CapturedWindowAudioKey, 1, 0)]
+    [InlineData(SourceSelectionModel.NoAudioKey, 0, 0)]
+    [InlineData(SourceSelectionModel.DesktopAudioKey, 2, 1)]
+    [InlineData("game", 3, 2)]
+    public void PersistedAudioSelectionSurvivesShareKindRoundTrips(
+        string persistedKey,
+        int windowIndex,
+        int nonWindowIndex)
+    {
+        var model = Model(() => [Window(1, "game", 11)], () => []);
+        model.RefreshAll();
+        model.SelectAudioKey(persistedKey);
+
+        Assert.Equal(windowIndex, model.SelectedAudioIndex);
+
+        model.SelectKind(SourceKind.Monitor);
+
+        Assert.Equal(persistedKey, model.AudioKey);
+        Assert.Equal(nonWindowIndex, model.SelectedAudioIndex);
+
+        model.SelectKind(SourceKind.CaptureDevice);
+
+        Assert.Equal(persistedKey, model.AudioKey);
+        Assert.Equal(nonWindowIndex, model.SelectedAudioIndex);
+
+        model.SelectKind(SourceKind.Window);
+
+        Assert.Equal(persistedKey, model.AudioKey);
+        Assert.Equal(windowIndex, model.SelectedAudioIndex);
     }
 
     [Fact]
@@ -311,7 +383,7 @@ public sealed class SourceSelectionModelTests
         dialog.SelectKind(SourceKind.Monitor);
         dialog.SelectWindowIndex(1);
         dialog.SelectMonitorIndex(1);
-        dialog.SelectAudioIndex(4);
+        dialog.SelectAudioIndex(3);
 
         windows =
         [
