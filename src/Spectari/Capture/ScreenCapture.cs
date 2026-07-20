@@ -87,6 +87,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     private int _reportedContentHeight;
     private int _poolWidth;
     private int _poolHeight;
+    private volatile bool _targetWasClosed;
 
     public int Width { get; }
     public int Height { get; }
@@ -95,6 +96,8 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     public string AdapterLuid { get; } = "?";
     public string DriverVersion { get; } = "?";
     public long FramesArrived => Interlocked.Read(ref _framesArrived);
+    internal bool TargetWasClosed => _targetWasClosed;
+    internal event Action<ScreenCapture>? TargetClosed;
 
     /// <summary>First exception thrown inside the frame callback, if any - a set value
     /// means the capture pipeline is dead and the session should stop with a real error.</summary>
@@ -135,6 +138,13 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     public static ScreenCapture ForWindow(IntPtr hWnd) =>
         CreateForTarget("window", () => D3DInterop.CreateItemForWindow(hWnd));
 
+    internal static ScreenCapture ForWindow(IntPtr hWnd, int outputWidth, int outputHeight) =>
+        CreateForTarget(
+            "window",
+            () => D3DInterop.CreateItemForWindow(hWnd),
+            outputWidth: outputWidth,
+            outputHeight: outputHeight);
+
     internal static ScreenCapture ForPreviewMonitor(IntPtr hMonitor, CaptureCreationTrace trace) =>
         CreateForTarget("monitor", () => D3DInterop.CreateItemForMonitor(hMonitor), writeDiagnostics: false, trace);
 
@@ -145,7 +155,9 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         string targetKind,
         Func<GraphicsCaptureItem> createItem,
         bool writeDiagnostics = true,
-        CaptureCreationTrace? trace = null)
+        CaptureCreationTrace? trace = null,
+        int? outputWidth = null,
+        int? outputHeight = null)
     {
         string itemStep = targetKind == "window"
             ? "GraphicsCaptureItem.CreateForWindow"
@@ -154,8 +166,15 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         GraphicsCaptureItem item = createItem();
         trace?.Complete(itemStep);
         Windows.Graphics.SizeInt32 itemSize = item.Size;
-        int width = itemSize.Width & ~1;
-        int height = itemSize.Height & ~1;
+        int itemWidth = itemSize.Width & ~1;
+        int itemHeight = itemSize.Height & ~1;
+        if (itemWidth <= 0 || itemHeight <= 0)
+        {
+            throw new CaptureTargetUnavailableException(
+                $"{targetKind} has no capturable surface ({itemSize.Width}x{itemSize.Height}); pick another source.");
+        }
+        int width = (outputWidth ?? itemSize.Width) & ~1;
+        int height = (outputHeight ?? itemSize.Height) & ~1;
         if (width <= 0 || height <= 0)
         {
             throw new CaptureTargetUnavailableException(
@@ -230,8 +249,8 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         _item = item;
         Width = width;   // even-aligned for 4:2:0 chroma
         Height = height;
-        _contentWidth = _poolWidth = Width;
-        _contentHeight = _poolHeight = Height;
+        _contentWidth = _poolWidth = itemSize.Width & ~1;
+        _contentHeight = _poolHeight = itemSize.Height & ~1;
         _reportedContentWidth = itemSize.Width;
         _reportedContentHeight = itemSize.Height;
 
@@ -265,13 +284,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         _stagingB = _device.CreateTexture2D(desc);
         trace?.Complete("ID3D11Device.CreateTexture2D (staging B)");
 
-        // A closed window/monitor ends the capture permanently - surface it as a
-        // clean session stop instead of a silent freeze-frame.
-        _item.Closed += (_, _) =>
-        {
-            _captureError ??= new InvalidOperationException("the captured window was closed; start a new share once it's running again");
-            try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
-        };
+        _item.Closed += OnTargetClosed;
 
         trace?.Begin("Direct3D11CaptureFramePool.CreateFreeThreaded");
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
@@ -288,6 +301,24 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         trace?.Begin("GraphicsCaptureSession.StartCapture");
         _session.StartCapture();
         trace?.Complete("GraphicsCaptureSession.StartCapture");
+    }
+
+    private void OnTargetClosed(GraphicsCaptureItem sender, object args)
+    {
+        _targetWasClosed = true;
+        _captureError ??= new InvalidOperationException(
+            "the captured window was closed; start a new share once it's running again");
+        try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
+        try
+        {
+            TargetClosed?.Invoke(this);
+        }
+        catch (Exception ex)
+        {
+            if (_writeDiagnostics)
+                Console.Error.WriteLine(
+                    $"[capture] target-close notification failed: {ex.Message.Replace('\r', ' ').Replace('\n', ' ')}");
+        }
     }
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
@@ -686,6 +717,16 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     {
         // Stop new callbacks before waiting for an in-flight callback's GPU gate.
         _disposing = true;
+        try
+        {
+            _item.Closed -= OnTargetClosed;
+        }
+        catch (Exception ex)
+        {
+            if (_writeDiagnostics)
+                Console.Error.WriteLine(
+                    $"[capture] target-close unsubscribe failed during disposal: {ex.Message.Replace('\r', ' ').Replace('\n', ' ')}");
+        }
         _framePool.FrameArrived -= OnFrameArrived;
         _session.Dispose();
         _framePool.Dispose();

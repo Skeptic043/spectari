@@ -53,6 +53,7 @@ public sealed class Broadcaster
     public volatile int SourceFps;   // compositor frames/sec (how fast the source actually changes)
     public volatile int DupPercent;  // % of encoded frames that were repeats (meaningful during motion only)
     public volatile string State = "starting"; // starting → live → stopped/failed
+    public volatile bool WaitingForWindow;
     public bool HasAudio { get; set; }
 
     /// <summary>Blocks until ffmpeg's header (init segment) has arrived - the

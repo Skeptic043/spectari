@@ -13,6 +13,8 @@ public sealed record SessionConfig
 {
     public IntPtr MonitorHandle { get; init; }
     public IntPtr WindowHandle { get; init; }
+    public string WindowProcessName { get; init; } = "";
+    public uint WindowProcessId { get; init; }
     public string CaptureDeviceSymbolicLink { get; init; } = "";
     public string SourceName { get; init; } = "";
 
@@ -194,7 +196,10 @@ public sealed class StreamSession
             capture = captureDeviceSelected
                 ? new MediaFoundationCapture(_config.CaptureDeviceSymbolicLink)
                 : _config.WindowHandle != IntPtr.Zero
-                    ? ScreenCapture.ForWindow(_config.WindowHandle)
+                    ? WindowReattachCapture.Create(
+                        _config.WindowHandle,
+                        _config.WindowProcessName,
+                        _config.WindowProcessId)
                     : _config.CompatibilityCapture
                         ? new DuplicationCapture(_config.MonitorHandle)
                         : new AutoMonitorCapture(_config.MonitorHandle);
@@ -256,6 +261,10 @@ public sealed class StreamSession
             HasAudio = audioPipeline is not null,
             StreamName = string.IsNullOrWhiteSpace(_config.StreamName)
                 ? Environment.MachineName : _config.StreamName.Trim(),
+        };
+        broadcaster.WaitingForWindow = capture is WindowReattachCapture
+        {
+            WaitingForWindow: true,
         };
         Broadcaster = broadcaster;
         var splitterTask = Task.Run(() => Mp4Splitter.RunAsync(ffmpeg.Output, broadcaster, ct), ct);
@@ -508,6 +517,10 @@ public sealed class StreamSession
 
         while (!ct.IsCancellationRequested)
         {
+            broadcaster.WaitingForWindow = capture is WindowReattachCapture
+            {
+                WaitingForWindow: true,
+            };
             _pacingStage = "waiting-for-sample-time";
             timer.WaitUntil(next);
 

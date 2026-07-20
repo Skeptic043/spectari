@@ -261,6 +261,8 @@ internal static class Program
         if (opts.ListMonitors) return 0;
 
         IntPtr monitorHandle = IntPtr.Zero, windowHandle = IntPtr.Zero;
+        string windowProcessName = "";
+        uint windowProcessId = 0;
         string sourceName;
         uint audioPid = 0;
         if (!string.IsNullOrEmpty(opts.Window))
@@ -272,6 +274,8 @@ internal static class Program
                 return 1;
             }
             windowHandle = window.Handle;
+            windowProcessName = window.ProcessName;
+            windowProcessId = window.Pid;
             sourceName = $"window '{window.Title}' [{window.ProcessName}]";
             audioPid = window.Pid; // default: audio follows the captured game
         }
@@ -305,6 +309,8 @@ internal static class Program
         {
             MonitorHandle = monitorHandle,
             WindowHandle = windowHandle,
+            WindowProcessName = windowProcessName,
+            WindowProcessId = windowProcessId,
             SourceName = sourceName,
             StreamName = opts.Name,
             AudioPid = audioPid,
