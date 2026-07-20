@@ -445,7 +445,8 @@ public sealed class MainForm : Form
             RefreshSourceOptions();
             if (changed && _rbCaptureDevice.Checked) ScheduleIdlePreviewRefresh();
         };
-        _audioCombo.SelectedIndexChanged += (_, _) => _sourceSelection.SelectAudioIndex(_audioCombo.SelectedIndex);
+        _audioCombo.SelectionChangeCommitted += (_, _) =>
+            _sourceSelection.SelectAudioIndex(_audioCombo.SelectedIndex);
         _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
         // The bitrate combo is the single source of truth for the chosen tier:
         // remember every user pick so it survives repopulates (source/preset
@@ -1229,7 +1230,8 @@ public sealed class MainForm : Form
             if (dialogSources.SelectCaptureDeviceIndex(captureDeviceCombo.SelectedIndex))
                 RefreshDlgSourceOptions();
         };
-        audioCombo.SelectedIndexChanged += (_, _) => dialogSources.SelectAudioIndex(audioCombo.SelectedIndex);
+        audioCombo.SelectionChangeCommitted += (_, _) =>
+            dialogSources.SelectAudioIndex(audioCombo.SelectedIndex);
         presetCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
         RefreshDlgSourceOptions();
 

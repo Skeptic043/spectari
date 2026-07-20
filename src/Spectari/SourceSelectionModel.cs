@@ -82,19 +82,34 @@ internal sealed class SourceSelectionModel
     internal IReadOnlyList<string> WindowDisplayItems => _windows.Select(FormatWindow).ToArray();
     internal IReadOnlyList<string> MonitorDisplayItems => _monitors.Select(FormatMonitor).ToArray();
     internal IReadOnlyList<string> CaptureDeviceDisplayItems => _captureDeviceDisplayItems;
-    internal IReadOnlyList<string> AudioDisplayItems =>
-    [
-        "No audio",
-        Kind switch
-        {
-            SourceKind.Window => "Captured window's audio",
-            SourceKind.Monitor => "No audio (monitor share: pick an app below)",
-            SourceKind.CaptureDevice => "No audio (capture device share: pick an app below)",
-            _ => "No audio (pick an app below)",
-        },
-        "Desktop audio (all sound)",
-        .. _windows.Select(FormatAudioWindow),
-    ];
+    internal IReadOnlyList<string> AudioDisplayItems => Kind switch
+    {
+        SourceKind.Window =>
+        [
+            "No audio",
+            "Captured window's audio",
+            "Desktop audio (all sound)",
+            .. _windows.Select(FormatAudioWindow),
+        ],
+        SourceKind.Monitor =>
+        [
+            "No audio (monitor share: pick an app below)",
+            "Desktop audio (all sound)",
+            .. _windows.Select(FormatAudioWindow),
+        ],
+        SourceKind.CaptureDevice =>
+        [
+            "No audio (capture device share: pick an app below)",
+            "Desktop audio (all sound)",
+            .. _windows.Select(FormatAudioWindow),
+        ],
+        _ =>
+        [
+            "No audio (pick an app below)",
+            "Desktop audio (all sound)",
+            .. _windows.Select(FormatAudioWindow),
+        ],
+    };
 
     internal int SelectedWindowIndex => _selectedWindowHandle is { } handle
         ? _windows.FindIndex(window => window.Handle == handle)
@@ -113,10 +128,11 @@ internal sealed class SourceSelectionModel
         get
         {
             if (_audioKey == NoAudioKey) return 0;
-            if (_audioKey == CapturedWindowAudioKey) return 1;
-            if (_audioKey == DesktopAudioKey) return 2;
+            if (_audioKey == CapturedWindowAudioKey) return Kind == SourceKind.Window ? 1 : 0;
+            if (_audioKey == DesktopAudioKey) return Kind == SourceKind.Window ? 2 : 1;
             int index = _windows.FindIndex(window => AudioIdentityEquals(window.ProcessName, _audioKey));
-            return index >= 0 ? index + 3 : 1;
+            int processOffset = Kind == SourceKind.Window ? 3 : 2;
+            return index >= 0 ? index + processOffset : Kind == SourceKind.Window ? 1 : 0;
         }
     }
 
@@ -282,14 +298,22 @@ internal sealed class SourceSelectionModel
 
     internal void SelectAudioIndex(int index)
     {
-        _audioKey = index switch
-        {
-            0 => NoAudioKey,
-            1 => CapturedWindowAudioKey,
-            2 => DesktopAudioKey,
-            > 2 when index - 3 < _windows.Count => _windows[index - 3].ProcessName,
-            _ => CapturedWindowAudioKey,
-        };
+        _audioKey = Kind == SourceKind.Window
+            ? index switch
+            {
+                0 => NoAudioKey,
+                1 => CapturedWindowAudioKey,
+                2 => DesktopAudioKey,
+                > 2 when index - 3 < _windows.Count => _windows[index - 3].ProcessName,
+                _ => CapturedWindowAudioKey,
+            }
+            : index switch
+            {
+                0 => NoAudioKey,
+                1 => DesktopAudioKey,
+                > 1 when index - 2 < _windows.Count => _windows[index - 2].ProcessName,
+                _ => CapturedWindowAudioKey,
+            };
     }
 
     internal void SelectWindowProcess(string? processName)
