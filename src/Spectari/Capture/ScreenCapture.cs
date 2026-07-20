@@ -282,7 +282,9 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         _session = _framePool.CreateCaptureSession(_item);
         trace?.Complete("Direct3D11CaptureFramePool.CreateCaptureSession");
         _session.IsCursorCaptureEnabled = true;
-        try { _session.IsBorderRequired = false; } catch { /* needs consent API; yellow border is fine */ }
+        trace?.Begin("GraphicsCaptureAccess.RequestAccessAsync");
+        CaptureBorderSuppression.TryDisable(_session);
+        trace?.Complete("GraphicsCaptureAccess.RequestAccessAsync");
         trace?.Begin("GraphicsCaptureSession.StartCapture");
         _session.StartCapture();
         trace?.Complete("GraphicsCaptureSession.StartCapture");
