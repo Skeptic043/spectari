@@ -272,9 +272,16 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
                     lastDebtLog = debtNow;
                 }
                 if (debt.StallSignal)
+                {
+                    Console.Error.WriteLine(HardwareStallDiagnostic.Format(
+                        _converter.PoolAccounting,
+                        _encoder.GetProgressSnapshot(),
+                        _writer.GetProgressSnapshot(),
+                        debtNow));
                     return RuntimeFailure(
                         $"sustained frame debt reached {debt.DebtFrames} frames after {convertFailure}",
                         HardwareFallbackKind.SustainedFrameDebt);
+                }
                 continue;
             }
 

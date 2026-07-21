@@ -29,6 +29,8 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
     private bool _draining;
     private bool _disposed;
     private long _submittedFrameCount;
+    private long _lastNeedInputEventTicks;
+    private long _lastHaveOutputEventTicks;
     private int _outputBufferBytes = 1024 * 1024;
 
     internal string FriendlyName => _friendlyName;
@@ -155,6 +157,13 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
         }
     }
 
+    public HardwareEncoderProgress GetProgressSnapshot() => new(
+        _pending.Count,
+        _submitted.Count,
+        Volatile.Read(ref _inputCredits),
+        Interlocked.Read(ref _lastNeedInputEventTicks),
+        Interlocked.Read(ref _lastHaveOutputEventTicks));
+
     public IReadOnlyList<EncodedAccessUnit> Drain()
     {
         if (!_initialized || _transform is null) return [];
@@ -239,9 +248,11 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
                 switch (mediaEvent.EventType)
                 {
                     case MediaEventTypes.TransformNeedInput:
+                        Interlocked.Exchange(ref _lastNeedInputEventTicks, Stopwatch.GetTimestamp());
                         _inputCredits++;
                         break;
                     case MediaEventTypes.TransformHaveOutput:
+                        Interlocked.Exchange(ref _lastHaveOutputEventTicks, Stopwatch.GetTimestamp());
                         ReadOutput(output);
                         break;
                     case MediaEventTypes.TransformDrainComplete:
