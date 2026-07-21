@@ -38,7 +38,9 @@ internal sealed class AudioPipeline : IDisposable
 
         _audioPid = audioPid;
         _captureDesktopAudio = captureDesktopAudio;
-        _audioInputDeviceId = audioInputDeviceId;
+        // An empty id means no device selection; storing it raw would route the
+        // is-not-null branches below to device capture and silence process audio.
+        _audioInputDeviceId = string.IsNullOrEmpty(audioInputDeviceId) ? null : audioInputDeviceId;
         PipeName = FormatPipeName(port);
         _pipe = new NamedPipeServerStream(PipeName, PipeDirection.Out, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
