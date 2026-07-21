@@ -78,6 +78,13 @@ internal readonly record struct HardwareEncoderInitialization(
 
 internal readonly record struct EncodedAccessUnit(ReadOnlyMemory<byte> Data, bool IsKeyFrame);
 
+internal readonly record struct HardwareEncoderProgress(
+    int PendingQueueDepth,
+    int SubmittedQueueDepth,
+    int InputCredits,
+    long LastNeedInputEventTicks,
+    long LastHaveOutputEventTicks);
+
 /// <summary>
 /// Codec-aware encoder boundary. Native encoder API objects stay inside the implementation.
 /// Input textures cross as neutral leases and output is complete H.264 access units.
@@ -100,6 +107,7 @@ internal interface IHardwareVideoEncoder : IDisposable
         long duration100ns);
 
     IReadOnlyList<EncodedAccessUnit> CollectOutput();
+    HardwareEncoderProgress GetProgressSnapshot();
     IReadOnlyList<EncodedAccessUnit> Drain();
     void Flush();
 }
@@ -130,6 +138,7 @@ internal sealed class UnavailableHardwareVideoEncoder : IHardwareVideoEncoder
     }
 
     public IReadOnlyList<EncodedAccessUnit> CollectOutput() => [];
+    public HardwareEncoderProgress GetProgressSnapshot() => new(0, 0, 0, 0, 0);
     public IReadOnlyList<EncodedAccessUnit> Drain() => [];
     public void Flush() { }
     public void Dispose() { }

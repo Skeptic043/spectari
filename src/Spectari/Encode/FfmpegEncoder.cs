@@ -76,7 +76,7 @@ public sealed class FfmpegEncoder : IDisposable
             ? $"-hide_banner -loglevel warning " +
               $"-thread_queue_size 128 -f h264 -framerate {fps} -i pipe:0 " +
               audioIn +
-              $"{audioOut}-c:v copy " +
+              $"{audioOut}-c:v copy {H264CfrTimestampOptions(fps)} " +
               $"-f mp4 -movflags +empty_moov+default_base_moof -frag_duration {fragUs} " +
               $"-max_interleave_delta 500000 " +
               $"-flush_packets 1 pipe:1"
@@ -132,6 +132,15 @@ public sealed class FfmpegEncoder : IDisposable
         "h264_qsv"   => "-preset veryfast -profile:v high",
         _            => "-preset veryfast -tune zerolatency -profile:v high",
     };
+
+    internal static string H264CfrTimestampOptions(int framesPerSecond)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(framesPerSecond);
+        // setts evaluates expressions in the INPUT timebase and rescales after,
+        // so a bare frame index floors to zero; divide by fps and the input
+        // timebase (TB) to land each packet exactly one frame apart.
+        return $"-bsf:v setts=pts=N/{framesPerSecond}/TB:dts=N/{framesPerSecond}/TB:duration=1/{framesPerSecond}/TB";
+    }
 
     public bool HasExited
     {

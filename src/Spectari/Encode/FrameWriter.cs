@@ -10,6 +10,7 @@ internal readonly record struct VideoInputWriterProgress(
     long LastEnqueueTicks,
     long LastWriteStartedTicks,
     long LastWriteCompletedTicks,
+    int QueueDepth,
     bool WriteInProgress,
     bool Failed);
 
@@ -69,6 +70,7 @@ public sealed class FrameWriter : IVideoInputWriter
         Interlocked.Read(ref _lastEnqueueTicks),
         Interlocked.Read(ref _lastWriteStartedTicks),
         Interlocked.Read(ref _lastWriteCompletedTicks),
+        _pending.Count,
         Volatile.Read(ref _writeInProgress) != 0,
         _failed);
 
@@ -151,6 +153,7 @@ internal sealed class AccessUnitWriter : IVideoInputWriter, IEncodedAccessUnitSi
         Interlocked.Read(ref _lastEnqueueTicks),
         Interlocked.Read(ref _lastWriteStartedTicks),
         Interlocked.Read(ref _lastWriteCompletedTicks),
+        _pending.Count,
         Volatile.Read(ref _writeInProgress) != 0,
         _failed);
 
