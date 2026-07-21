@@ -399,44 +399,137 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
         if (pointer == 0)
             throw new InvalidOperationException("The selected hardware H.264 transform has no ICodecAPI rate-control surface.");
 
+        var skippedProperties = new List<string>();
         ICodecApiNative codecApi;
         try { codecApi = (ICodecApiNative)Marshal.GetObjectForIUnknown(pointer); }
         finally { Marshal.Release(pointer); }
         try
         {
-            SetCodecValue(codecApi, CodecApiGuids.RateControlMode, 0u, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.MeanBitRate,
+            SetCodecValue(
+                codecApi,
+                "CODECAPI_AVEncCommonRateControlMode",
+                CodecApiGuids.RateControlMode,
+                0u,
+                required: true);
+            SetCodecValue(
+                codecApi,
+                "CODECAPI_AVEncCommonMeanBitRate",
+                CodecApiGuids.MeanBitRate,
                 checked((uint)parameters.BitrateKbps * 1000), required: true);
-            SetCodecValue(codecApi, CodecApiGuids.MaxBitRate,
-                checked((uint)parameters.MaximumBitrateKbps * 1000), required: true);
-            SetCodecValue(codecApi, CodecApiGuids.BufferSize,
-                parameters.H264BufferSizeBytes, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.GopSize, (uint)parameters.GopFrames, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.BPictureCount, 0u, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.LowLatency, true, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.AdaptiveMode, 0u, required: true);
-            SetCodecValue(codecApi, CodecApiGuids.Cabac, true, required: true);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncCommonMaxBitRate",
+                CodecApiGuids.MaxBitRate,
+                checked((uint)parameters.MaximumBitrateKbps * 1000),
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncCommonBufferSize",
+                CodecApiGuids.BufferSize,
+                parameters.H264BufferSizeBytes,
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncMPVGOPSize",
+                CodecApiGuids.GopSize,
+                (uint)parameters.GopFrames,
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncMPVDefaultBPictureCount",
+                CodecApiGuids.BPictureCount,
+                0u,
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVLowLatencyMode",
+                CodecApiGuids.LowLatency,
+                true,
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncAdaptiveMode",
+                CodecApiGuids.AdaptiveMode,
+                0u,
+                skippedProperties);
+            SetOptionalCodecValue(
+                codecApi,
+                "CODECAPI_AVEncH264CABACEnable",
+                CodecApiGuids.Cabac,
+                true,
+                skippedProperties);
         }
         finally
         {
+            Console.WriteLine(
+                $"[mf-encode] skipped optional ICodecAPI properties: {(skippedProperties.Count == 0 ? "none" : string.Join(", ", skippedProperties))}.");
             Marshal.ReleaseComObject(codecApi);
         }
     }
 
-    private static void SetCodecValue(
+    private static void SetOptionalCodecValue(
         ICodecApiNative codecApi,
+        string propertyName,
+        Guid property,
+        object value,
+        ICollection<string> skippedProperties)
+    {
+        if (!SetCodecValue(codecApi, propertyName, property, value, required: false))
+            skippedProperties.Add(propertyName);
+    }
+
+    private static bool SetCodecValue(
+        ICodecApiNative codecApi,
+        string propertyName,
         Guid property,
         object value,
         bool required)
     {
-        int supported = codecApi.IsSupported(ref property);
-        if (supported < 0)
+        try
         {
-            if (required) Marshal.ThrowExceptionForHR(supported);
-            return;
+            int supported = codecApi.IsSupported(ref property);
+            if (supported != 0)
+                return RejectCodecProperty(propertyName, "support check", supported, required);
+
+            int result = codecApi.SetValue(ref property, ref value);
+            return result == 0 || RejectCodecProperty(
+                propertyName,
+                "value set",
+                result,
+                required);
         }
-        int result = codecApi.SetValue(ref property, ref value);
-        if (result < 0 && required) Marshal.ThrowExceptionForHR(result);
+        catch (Exception) when (!required)
+        {
+            return false;
+        }
+        catch (InvalidOperationException ex) when (
+            ex.Message.StartsWith($"ICodecAPI property {propertyName} ", StringComparison.Ordinal))
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"ICodecAPI property {propertyName} configuration failed: {SingleLine(ex.Message)}",
+                ex);
+        }
+    }
+
+    private static bool RejectCodecProperty(
+        string propertyName,
+        string action,
+        int result,
+        bool required)
+    {
+        if (!required) return false;
+
+        Exception? error = Marshal.GetExceptionForHR(result);
+        string detail = error is null
+            ? $"HRESULT 0x{result:X8}"
+            : SingleLine(error.Message);
+        throw new InvalidOperationException(
+            $"ICodecAPI property {propertyName} {action} failed: {detail}",
+            error);
     }
 
     private IMFActivate? FindEncoderActivation(string adapterLuid)

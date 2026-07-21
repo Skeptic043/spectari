@@ -273,13 +273,6 @@ public sealed class StreamSession
         VideoPipelinePlan videoPlan = hardwareVideo.Plan;
         IHardwareVideoEncoder hardwareEncoder = hardwareVideo.Encoder;
         Nv12FrameConverter? hardwareConverter = hardwareVideo.Converter;
-        if (videoPlan.RequiresSessionCpuRecovery)
-        {
-            _pipelineStalled = true;
-            Console.Error.WriteLine(
-                $"[encoder] hardware texture lane unavailable: {videoPlan.Reason}; requesting one-time CPU recovery (libx264).");
-            return videoPlan.Reason;
-        }
         string activeRawVideoEncoder = videoPlan.RawVideoEncoder;
         ActiveEncoder = hardwareVideo.ActiveEncoderName(activeRawVideoEncoder);
         hardwareVideo.LogActivePath(activeRawVideoEncoder);
