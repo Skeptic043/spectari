@@ -256,6 +256,14 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
             if (!_converter.TryConvert(_gpuCapture, out VideoFrameLease? current, out Nv12ConvertFailure convertFailure))
             {
                 FrameDebtSnapshot debt = _ticks.RecordUnavailableTick();
+                _setStage("hardware-output-collect");
+                IReadOnlyList<EncodedAccessUnit> collected = _encoder.CollectOutput();
+                encodedUnits += collected.Count;
+                if (collected.Count > 0)
+                {
+                    _setStage("access-unit-output");
+                    _output.Write(collected);
+                }
                 long debtNow = Stopwatch.GetTimestamp();
                 if (debtNow - lastDebtLog >= Stopwatch.Frequency || debt.StallSignal)
                 {

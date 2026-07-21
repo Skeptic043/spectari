@@ -99,6 +99,7 @@ internal interface IHardwareVideoEncoder : IDisposable
         long presentationTime100ns,
         long duration100ns);
 
+    IReadOnlyList<EncodedAccessUnit> CollectOutput();
     IReadOnlyList<EncodedAccessUnit> Drain();
     void Flush();
 }
@@ -128,6 +129,7 @@ internal sealed class UnavailableHardwareVideoEncoder : IHardwareVideoEncoder
         throw new InvalidOperationException(UnavailableReason);
     }
 
+    public IReadOnlyList<EncodedAccessUnit> CollectOutput() => [];
     public IReadOnlyList<EncodedAccessUnit> Drain() => [];
     public void Flush() { }
     public void Dispose() { }

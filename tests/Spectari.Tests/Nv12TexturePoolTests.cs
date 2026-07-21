@@ -6,6 +6,24 @@ namespace Spectari.Tests;
 public sealed class Nv12TexturePoolTests
 {
     [Fact]
+    public void DefaultCapacityProvidesAsyncEncoderHeadroom()
+    {
+        using var pool = Nv12TexturePool.CreateForTesting(Nv12TexturePool.DefaultCapacity);
+        var leases = new List<VideoFrameLease>();
+
+        for (int index = 0; index < Nv12TexturePool.DefaultCapacity; index++)
+        {
+            Assert.True(pool.TryRent(out VideoFrameLease? lease));
+            leases.Add(lease!);
+        }
+
+        Assert.Equal(8, pool.GetAccounting().Capacity);
+        Assert.False(pool.TryRent(out _));
+        foreach (VideoFrameLease lease in leases)
+            lease.Return(FrameLeaseReturnReason.Flush);
+    }
+
+    [Fact]
     public void ExhaustionFailsImmediatelyUntilALeaseReturns()
     {
         using var pool = Nv12TexturePool.CreateForTesting(2);

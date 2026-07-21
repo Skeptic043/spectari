@@ -134,7 +134,7 @@ internal sealed class Nv12FrameConverter : IDisposable
         int outputWidth,
         int outputHeight,
         int framesPerSecond,
-        int poolCapacity = 3)
+        int poolCapacity = Nv12TexturePool.DefaultCapacity)
     {
         _capture = capture;
         _laneDevice = GpuLaneDeviceFactory.Create(capture, targetAdapter);

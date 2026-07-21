@@ -63,9 +63,11 @@ internal sealed class VideoFrameLease
     }
 }
 
-/// <summary>Two or three encode surfaces with immediate failure on exhaustion.</summary>
+/// <summary>Fixed encode-surface pool with immediate failure on exhaustion.</summary>
 internal sealed class Nv12TexturePool : IDisposable
 {
+    internal const int DefaultCapacity = 8;
+
     private sealed class Slot
     {
         internal required GpuTextureFrame Frame { get; init; }
@@ -87,7 +89,7 @@ internal sealed class Nv12TexturePool : IDisposable
         int width,
         int height,
         string adapterLuid,
-        int capacity = 3)
+        int capacity = DefaultCapacity)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
@@ -228,7 +230,9 @@ internal sealed class Nv12TexturePool : IDisposable
 
     private static void ValidateCapacity(int capacity)
     {
-        if (capacity is < 2 or > 3)
-            throw new ArgumentOutOfRangeException(nameof(capacity), "NV12 pool capacity must be two or three.");
+        if (capacity is < 2 or > DefaultCapacity)
+            throw new ArgumentOutOfRangeException(
+                nameof(capacity),
+                $"NV12 pool capacity must be between two and {DefaultCapacity}.");
     }
 }
