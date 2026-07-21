@@ -9,6 +9,7 @@ namespace Spectari.Encode;
 /// <summary>Asynchronous Media Foundation H.264 encoder for pooled DXGI surfaces.</summary>
 internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
 {
+    internal const string DefaultFriendlyName = "Media Foundation H.264";
     private const int MfEventFlagNoWait = 1;
     private static readonly Guid MftEnumAdapterLuid = new("1d39518c-e220-4da8-a07f-ba172552d6b1");
     private readonly Queue<PendingInput> _pending = new();
@@ -20,7 +21,7 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
     private IMFMediaEventGenerator? _events;
     private IMFDXGIDeviceManager? _deviceManager;
     private ID3D11Device? _deviceReference;
-    private string _friendlyName = "Media Foundation H.264";
+    private string _friendlyName = DefaultFriendlyName;
     private int _inputCredits;
     private bool _mfStarted;
     private bool _initialized;
@@ -49,8 +50,8 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
                     $"no hardware H.264 Media Foundation transform matched adapter {context.Adapter.Luid}");
             }
 
-            try { _friendlyName = _activation.FriendlyName; }
-            catch { _friendlyName = "Media Foundation H.264"; }
+            try { _friendlyName = NormalizeFriendlyName(_activation.FriendlyName); }
+            catch { _friendlyName = DefaultFriendlyName; }
             return HardwareEncoderProbeResult.AvailableNow();
         }
         catch (Exception ex)
@@ -126,6 +127,24 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
         {
             PumpEvents(output);
             SubmitInputs();
+            PumpEvents(output);
+            return output;
+        }
+        catch
+        {
+            ReleaseAll(FrameLeaseReturnReason.Failure);
+            throw;
+        }
+    }
+
+    public IReadOnlyList<EncodedAccessUnit> CollectOutput()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!_initialized || _transform is null) return [];
+
+        var output = new List<EncodedAccessUnit>();
+        try
+        {
             PumpEvents(output);
             return output;
         }
@@ -648,6 +667,9 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
 
     private static string SingleLine(string value) =>
         value.Replace('\r', ' ').Replace('\n', ' ');
+
+    internal static string NormalizeFriendlyName(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? DefaultFriendlyName : value.Trim();
 
     private readonly record struct PendingInput(
         VideoFrameLease Frame,

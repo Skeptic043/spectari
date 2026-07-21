@@ -33,6 +33,22 @@ public sealed class HardwareFrameTickPolicyTests
     }
 
     [Fact]
+    public void CollectionOnlyUnavailableTickRecordsDebtWithoutAttachingEpoch()
+    {
+        var policy = new HardwareFrameTickPolicy(60);
+
+        FrameDebtSnapshot debt = policy.RecordUnavailableTick();
+        bool epochAttached = policy.ConfirmEncoderSubmission(encoderSubmitted: false);
+        HardwareFrameTickPlan recovery = policy.PlanAvailableTick(duplicateAvailable: true);
+
+        Assert.Equal(1, debt.DebtFrames);
+        Assert.False(epochAttached);
+        Assert.Equal(1, recovery.CurrentFrameSubmissions);
+        Assert.Equal(1, recovery.DuplicateSubmissions);
+        Assert.Equal(0, recovery.Debt.DebtFrames);
+    }
+
+    [Fact]
     public void AvailableTickRepaysAtMostOneDebtFrame()
     {
         var policy = new HardwareFrameTickPolicy(60);
