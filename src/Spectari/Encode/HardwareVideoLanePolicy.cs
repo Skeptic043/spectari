@@ -15,8 +15,7 @@ internal readonly record struct VideoPipelinePlan(
     EncoderAdapterIdentity? HardwareAdapter,
     string? HardwareProbeCacheToken,
     HardwareVideoEncoderParameters Parameters,
-    string Reason,
-    bool RequiresSessionCpuRecovery = false);
+    string Reason);
 
 internal static class HardwareEncoderProbeToken
 {
@@ -73,9 +72,7 @@ internal static class HardwareVideoLanePolicy
                 parameters,
                 null,
                 null,
-                fallback.Reason,
-                "libx264",
-                requiresSessionCpuRecovery: true);
+                fallback.Reason);
         }
 
         if (!target.Value.Luid.Equals(sourceAdapter.Luid, StringComparison.OrdinalIgnoreCase))
@@ -88,9 +85,7 @@ internal static class HardwareVideoLanePolicy
                 parameters,
                 target,
                 null,
-                fallback.Reason,
-                "libx264",
-                requiresSessionCpuRecovery: true);
+                fallback.Reason);
         }
 
         string? token = HardwareEncoderProbeToken.Create(target.Value);
@@ -116,9 +111,7 @@ internal static class HardwareVideoLanePolicy
             parameters,
             target,
             token,
-            probeFallback.Reason,
-            "libx264",
-            requiresSessionCpuRecovery: true);
+            probeFallback.Reason);
     }
 
     internal static EncoderAdapterIdentity? ResolveTargetAdapter(
@@ -164,16 +157,13 @@ internal static class HardwareVideoLanePolicy
         HardwareVideoEncoderParameters parameters,
         EncoderAdapterIdentity? target,
         string? token,
-        string reason,
-        string? rawVideoEncoder = null,
-        bool requiresSessionCpuRecovery = false) => new(
+        string reason) => new(
             VideoInputLane.RawVideo,
-            rawVideoEncoder ?? rawVideo.Encoder,
+            rawVideo.Encoder,
             target,
             token,
             parameters,
-            reason,
-            requiresSessionCpuRecovery);
+            reason);
 
     private static bool IdentityKnown(string? value) =>
         !string.IsNullOrWhiteSpace(value) && value != "?" &&

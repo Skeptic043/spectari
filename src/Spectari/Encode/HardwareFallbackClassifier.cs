@@ -25,8 +25,8 @@ internal static class HardwareFallbackClassifier
             HardwareFallbackKind.Initialization or
             HardwareFallbackKind.AdapterMismatch => new(
                 kind,
-                true,
-                $"video pipeline stalled before hardware texture lane startup: {reason}"),
+                false,
+                $"hardware texture lane unavailable: {reason}"),
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
 

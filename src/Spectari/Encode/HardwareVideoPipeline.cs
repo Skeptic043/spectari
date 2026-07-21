@@ -114,9 +114,8 @@ internal sealed class HardwareVideoPipeline : IDisposable
                 plan = plan with
                 {
                     Lane = VideoInputLane.RawVideo,
-                    RawVideoEncoder = "libx264",
+                    RawVideoEncoder = rawVideo.Encoder,
                     Reason = fallback.Reason,
-                    RequiresSessionCpuRecovery = fallback.StartCpuRecovery,
                 };
             }
         }
@@ -138,8 +137,13 @@ internal sealed class HardwareVideoPipeline : IDisposable
             return;
         }
 
+        string fallbackReason = Plan.Reason.StartsWith(
+            "hardware texture lane unavailable:",
+            StringComparison.Ordinal)
+                ? Plan.Reason
+                : $"hardware texture lane unavailable: {Plan.Reason}";
         Console.WriteLine(
-            $"[encoder] hardware texture lane unavailable: {Plan.Reason}; using raw BGRA -> ffmpeg {rawVideoEncoder}.");
+            $"[encoder] {fallbackReason}; using raw BGRA -> ffmpeg {rawVideoEncoder}.");
         Console.WriteLine(
             $"[encoder] active video path: raw BGRA readback -> ffmpeg {rawVideoEncoder}.");
     }

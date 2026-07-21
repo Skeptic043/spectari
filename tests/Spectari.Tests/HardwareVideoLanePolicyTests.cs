@@ -44,7 +44,8 @@ public sealed class HardwareVideoLanePolicyTests
 
         Assert.Equal(target, plan.HardwareAdapter);
         Assert.Equal(VideoInputLane.RawVideo, plan.Lane);
-        Assert.Equal("libx264", plan.RawVideoEncoder);
+        Assert.Equal(requested, plan.RawVideoEncoder);
+        Assert.False(StreamSession.IsPipelineStallReason(plan.Reason));
     }
 
     [Fact]
@@ -110,13 +111,13 @@ public sealed class HardwareVideoLanePolicyTests
             (_, _) => throw new InvalidOperationException("Mismatch must not probe."));
 
         Assert.Equal(VideoInputLane.RawVideo, plan.Lane);
-        Assert.Equal("libx264", plan.RawVideoEncoder);
-        Assert.True(plan.RequiresSessionCpuRecovery);
+        Assert.Equal("h264_nvenc", plan.RawVideoEncoder);
+        Assert.False(StreamSession.IsPipelineStallReason(plan.Reason));
         Assert.Contains("cross-adapter", plan.Reason);
     }
 
     [Fact]
-    public void UnavailableProbeFallsBackToCpuRawvideo()
+    public void UnavailableProbeFallsBackToSelectedRawvideoEncoder()
     {
         EncoderAdapterIdentity amd = Adapter(0x1002, "amd-luid", "amd-driver");
         using var encoder = new UnavailableHardwareVideoEncoder();
@@ -131,8 +132,8 @@ public sealed class HardwareVideoLanePolicyTests
             encoder.Probe);
 
         Assert.Equal(VideoInputLane.RawVideo, plan.Lane);
-        Assert.Equal("libx264", plan.RawVideoEncoder);
-        Assert.True(plan.RequiresSessionCpuRecovery);
+        Assert.Equal("h264_amf", plan.RawVideoEncoder);
+        Assert.False(StreamSession.IsPipelineStallReason(plan.Reason));
         Assert.Contains(UnavailableHardwareVideoEncoder.UnavailableReason, plan.Reason);
     }
 

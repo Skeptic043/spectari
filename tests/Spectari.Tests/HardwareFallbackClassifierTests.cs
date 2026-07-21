@@ -9,13 +9,14 @@ public sealed class HardwareFallbackClassifierTests
     [InlineData((int)HardwareFallbackKind.Probe)]
     [InlineData((int)HardwareFallbackKind.Initialization)]
     [InlineData((int)HardwareFallbackKind.AdapterMismatch)]
-    public void StartupFailuresRequestSessionCpuRecovery(int kindValue)
+    public void StartupFailuresStayInSessionWithoutAStallReason(int kindValue)
     {
         var kind = (HardwareFallbackKind)kindValue;
         HardwareFallbackDecision decision = HardwareFallbackClassifier.Startup(kind, "unavailable");
 
-        Assert.True(decision.StartCpuRecovery);
-        Assert.True(StreamSession.IsPipelineStallReason(decision.Reason));
+        Assert.False(decision.StartCpuRecovery);
+        Assert.False(StreamSession.IsPipelineStallReason(decision.Reason));
+        Assert.StartsWith("hardware texture lane unavailable:", decision.Reason);
     }
 
     [Theory]
