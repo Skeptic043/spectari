@@ -4,6 +4,13 @@ namespace Spectari.Encode;
 
 internal static class HardwareStallDiagnostic
 {
+    internal static string FormatDelivery(
+        double framesPerSecond,
+        long accessUnits,
+        int debtFrames,
+        HardwareEncoderProgress encoder) =>
+        $"[gpu-encode] encode delivery: {framesPerSecond:F1} fps, {accessUnits} access units, debt {debtFrames} frames, pending-depth={encoder.PendingQueueDepth}, input-credits={encoder.InputCredits}.";
+
     internal static string Format(
         FrameLeaseAccounting pool,
         HardwareEncoderProgress encoder,

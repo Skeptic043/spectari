@@ -106,6 +106,8 @@ internal interface IHardwareVideoEncoder : IDisposable
         long presentationTime100ns,
         long duration100ns);
 
+    /// <summary>Pumps available encoder events, submits credited pending inputs,
+    /// and collects any output without waiting.</summary>
     IReadOnlyList<EncodedAccessUnit> CollectOutput();
     HardwareEncoderProgress GetProgressSnapshot();
     IReadOnlyList<EncodedAccessUnit> Drain();

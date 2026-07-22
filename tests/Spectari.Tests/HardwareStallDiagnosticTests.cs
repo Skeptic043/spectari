@@ -6,6 +6,22 @@ namespace Spectari.Tests;
 public sealed class HardwareStallDiagnosticTests
 {
     [Fact]
+    public void DeliveryFormatIncludesPendingDepthAndInputCredits()
+    {
+        var encoder = new HardwareEncoderProgress(7, 0, 1, 0, 0);
+
+        string diagnostic = HardwareStallDiagnostic.FormatDelivery(
+            59.94,
+            600,
+            2,
+            encoder);
+
+        Assert.Equal(
+            "[gpu-encode] encode delivery: 59.9 fps, 600 access units, debt 2 frames, pending-depth=7, input-credits=1.",
+            diagnostic);
+    }
+
+    [Fact]
     public void FormatNamesEveryResourceLocationAtTheStallInstant()
     {
         var pool = new FrameLeaseAccounting(

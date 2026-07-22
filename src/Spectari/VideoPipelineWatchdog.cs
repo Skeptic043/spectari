@@ -12,38 +12,35 @@ internal sealed class VideoPipelineWatchdog
     private readonly IVideoInputWriter _writer;
     private readonly Broadcaster _broadcaster;
     private readonly FfmpegEncoder _ffmpeg;
-    private readonly StallTeardownCoordinator _stallTeardown;
+    private readonly PipelineStallExitCoordinator _stallExit;
     private readonly IHardwareVideoEncoder _hardwareEncoder;
     private readonly Nv12FrameConverter? _hardwareConverter;
-    private readonly CancellationTokenSource _cancellation;
+    private readonly CancellationToken _cancellationToken;
     private readonly Func<string> _pacingStage;
     private readonly Func<string> _teardownStage;
-    private readonly Action<string> _recordStall;
 
     internal VideoPipelineWatchdog(
         ICaptureSource capture,
         IVideoInputWriter writer,
         Broadcaster broadcaster,
         FfmpegEncoder ffmpeg,
-        StallTeardownCoordinator stallTeardown,
+        PipelineStallExitCoordinator stallExit,
         IHardwareVideoEncoder hardwareEncoder,
         Nv12FrameConverter? hardwareConverter,
-        CancellationTokenSource cancellation,
+        CancellationToken cancellationToken,
         Func<string> pacingStage,
-        Func<string> teardownStage,
-        Action<string> recordStall)
+        Func<string> teardownStage)
     {
         _capture = capture;
         _writer = writer;
         _broadcaster = broadcaster;
         _ffmpeg = ffmpeg;
-        _stallTeardown = stallTeardown;
+        _stallExit = stallExit;
         _hardwareEncoder = hardwareEncoder;
         _hardwareConverter = hardwareConverter;
-        _cancellation = cancellation;
+        _cancellationToken = cancellationToken;
         _pacingStage = pacingStage;
         _teardownStage = teardownStage;
-        _recordStall = recordStall;
     }
 
     internal void Start()
@@ -54,7 +51,7 @@ internal sealed class VideoPipelineWatchdog
 
     private void Run()
     {
-        CancellationToken cancellationToken = _cancellation.Token;
+        CancellationToken cancellationToken = _cancellationToken;
         PipelineBaseline baseline = TakeBaseline();
         if (!_broadcaster.WaitForInit(TimeSpan.FromSeconds(10), cancellationToken))
         {
@@ -122,10 +119,7 @@ internal sealed class VideoPipelineWatchdog
                 "[pipeline] CPU recovery is already active; stopping with the stage reason above.");
         }
 
-        _recordStall(stopReason);
-        _stallTeardown.Arm(stopReason, FormatActiveStages);
-        _cancellation.Cancel();
-        _ffmpeg.AbortForStall();
+        _stallExit.Begin(stopReason, FormatActiveStages);
     }
 
     private PipelineBaseline TakeBaseline() => new(

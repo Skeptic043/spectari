@@ -118,6 +118,7 @@ internal sealed class AccessUnitWriter : IVideoInputWriter, IEncodedAccessUnitSi
     private readonly BlockingCollection<byte[]> _pending = new(boundedCapacity: 8);
     private readonly Thread _thread;
     private readonly FfmpegEncoder _encoder;
+    private readonly CancellationToken _cancellationToken;
     private volatile bool _failed;
     private long _unitsEnqueued;
     private long _writesStarted;
@@ -127,9 +128,10 @@ internal sealed class AccessUnitWriter : IVideoInputWriter, IEncodedAccessUnitSi
     private long _lastWriteCompletedTicks;
     private int _writeInProgress;
 
-    internal AccessUnitWriter(FfmpegEncoder encoder)
+    internal AccessUnitWriter(FfmpegEncoder encoder, CancellationToken cancellationToken)
     {
         _encoder = encoder;
+        _cancellationToken = cancellationToken;
         _thread = new Thread(WriteLoop) { IsBackground = true, Name = "ffmpeg-h264-writer" };
         _thread.Start();
     }
@@ -138,12 +140,17 @@ internal sealed class AccessUnitWriter : IVideoInputWriter, IEncodedAccessUnitSi
 
     public void Write(IReadOnlyList<EncodedAccessUnit> accessUnits)
     {
-        foreach (EncodedAccessUnit accessUnit in accessUnits)
+        try
         {
-            _pending.Add(accessUnit.Data.ToArray());
-            Interlocked.Increment(ref _unitsEnqueued);
-            Interlocked.Exchange(ref _lastEnqueueTicks, Stopwatch.GetTimestamp());
+            foreach (EncodedAccessUnit accessUnit in accessUnits)
+            {
+                _pending.Add(accessUnit.Data.ToArray(), _cancellationToken);
+                Interlocked.Increment(ref _unitsEnqueued);
+                Interlocked.Exchange(ref _lastEnqueueTicks, Stopwatch.GetTimestamp());
+            }
         }
+        catch (OperationCanceledException) when (_cancellationToken.IsCancellationRequested) { }
+        catch (InvalidOperationException) when (_cancellationToken.IsCancellationRequested) { }
     }
 
     public VideoInputWriterProgress GetProgressSnapshot() => new(
