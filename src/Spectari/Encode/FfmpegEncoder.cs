@@ -74,9 +74,13 @@ public sealed class FfmpegEncoder : IDisposable
         // fragments when audio starves - a degraded stream instead of no stream.
         string args = videoInput == FfmpegVideoInput.H264AnnexB
             ? $"-hide_banner -loglevel warning " +
-              $"-thread_queue_size 128 -f h264 -framerate {fps} -i pipe:0 " +
+              // The timestamp filter must run at DEMUX (input side): ffmpeg's
+              // interleaver orders packets before output bitstream filters run,
+              // and untimestamped video makes it hold every audio packet until
+              // EOF, so viewers receive a video-only stream that never plays.
+              $"-thread_queue_size 128 {H264CfrTimestampOptions(fps)} -f h264 -framerate {fps} -i pipe:0 " +
               audioIn +
-              $"{audioOut}-c:v copy {H264CfrTimestampOptions(fps)} " +
+              $"{audioOut}-c:v copy " +
               $"-f mp4 -movflags +empty_moov+default_base_moof -frag_duration {fragUs} " +
               $"-max_interleave_delta 500000 " +
               $"-flush_packets 1 pipe:1"
