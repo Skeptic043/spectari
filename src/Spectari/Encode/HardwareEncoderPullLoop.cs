@@ -174,9 +174,11 @@ internal sealed class HardwareEncoderPullLoop
     private readonly IEncodedAccessUnitSink _output;
     private readonly EncoderCreditFaminePolicy _creditFamine;
     private readonly long _timestampFrequency;
+    private readonly long _frameIntervalTicks;
     private readonly long _nominalDuration100ns;
     private readonly Action<long> _firstSubmission;
     private long _lastSubmittedVersion;
+    private long _nextSubmissionDeadlineTicks;
     private long _firstSubmissionTicks;
     private long _lastPresentationTime100ns;
     private long _submittedFrames;
@@ -201,6 +203,7 @@ internal sealed class HardwareEncoderPullLoop
             framesPerSecond,
             timestampFrequency);
         _timestampFrequency = timestampFrequency;
+        _frameIntervalTicks = Math.Max(1, timestampFrequency / framesPerSecond);
         _nominalDuration100ns = Math.Max(
             1,
             TimeSpan.TicksPerSecond / framesPerSecond);
@@ -224,7 +227,9 @@ internal sealed class HardwareEncoderPullLoop
         long currentVersion = _capture.FrameVersion;
         bool newerFrameReady = currentVersion > _lastSubmittedVersion;
         HardwarePullEncoderProgress progress = _encoder.GetProgressSnapshot();
-        if (newerFrameReady && progress.InputCredits > 0)
+        bool submissionDue = _submittedFrames == 0 ||
+            nowTicks >= _nextSubmissionDeadlineTicks;
+        if (newerFrameReady && submissionDue && progress.InputCredits > 0)
         {
             if (_converter.TryConvert(
                 currentVersion,
@@ -252,18 +257,20 @@ internal sealed class HardwareEncoderPullLoop
                     currentVersion,
                     frame!.CaptureVersion);
                 _submittedFrames++;
+                AdvanceSubmissionDeadline(nowTicks);
                 submitted = true;
                 didWork = true;
                 accessUnits += PollAndWrite(nowTicks);
                 currentVersion = _capture.FrameVersion;
                 newerFrameReady = currentVersion > _lastSubmittedVersion;
                 progress = _encoder.GetProgressSnapshot();
+                submissionDue = nowTicks >= _nextSubmissionDeadlineTicks;
             }
         }
 
         string? stallReason = _creditFamine.Observe(
             nowTicks,
-            newerFrameReady,
+            newerFrameReady && submissionDue,
             progress)
                 ? $"encoder received no NeedInput event for {EncoderCreditFaminePolicy.DefaultFrameIntervals} frame intervals while a newer capture frame was ready"
                 : null;
@@ -286,7 +293,13 @@ internal sealed class HardwareEncoderPullLoop
                     _accessUnitsWritten);
             }
             if (!step.DidWork)
-                _capture.WaitForFreshFrame(_lastSubmittedVersion, 2);
+            {
+                bool frameReady = _capture.WaitForFreshFrame(
+                    _lastSubmittedVersion,
+                    2);
+                if (frameReady)
+                    cancellationToken.WaitHandle.WaitOne(1);
+            }
         }
 
         return new HardwarePullRunResult(
@@ -302,6 +315,20 @@ internal sealed class HardwareEncoderPullLoop
             _lastPresentationTime100ns + 1,
             checked((nowTicks - _firstSubmissionTicks) * TimeSpan.TicksPerSecond /
                 _timestampFrequency));
+    }
+
+    private void AdvanceSubmissionDeadline(long nowTicks)
+    {
+        if (_submittedFrames == 1)
+        {
+            _nextSubmissionDeadlineTicks = checked(nowTicks + _frameIntervalTicks);
+            return;
+        }
+
+        long advanced = checked(_nextSubmissionDeadlineTicks + _frameIntervalTicks);
+        _nextSubmissionDeadlineTicks = advanced <= nowTicks
+            ? checked(nowTicks + _frameIntervalTicks)
+            : advanced;
     }
 
     private int PollAndWrite(long nowTicks)
