@@ -148,6 +148,8 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
         try
         {
             PumpEvents(output);
+            SubmitInputs();
+            PumpEvents(output);
             return output;
         }
         catch

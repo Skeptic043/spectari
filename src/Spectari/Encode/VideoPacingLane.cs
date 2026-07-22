@@ -186,6 +186,7 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
     private readonly int _framesPerSecond;
     private readonly TaskCompletionSource<long> _videoEpoch;
     private readonly Action<string> _setStage;
+    private readonly Action<string> _runtimeFailure;
 
     internal HardwareVideoPacingLane(
         ICaptureSource capture,
@@ -200,7 +201,8 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
         Task serverTask,
         int framesPerSecond,
         TaskCompletionSource<long> videoEpoch,
-        Action<string> setStage)
+        Action<string> setStage,
+        Action<string> runtimeFailure)
     {
         _capture = capture;
         _gpuCapture = gpuCapture;
@@ -216,6 +218,7 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
         _framesPerSecond = framesPerSecond;
         _videoEpoch = videoEpoch;
         _setStage = setStage;
+        _runtimeFailure = runtimeFailure;
     }
 
     public string Run(CancellationToken cancellationToken)
@@ -302,11 +305,13 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
                 try
                 {
                     _setStage("hardware-encode");
+                    long submissionsBefore = _encoder.SubmittedFrameCount;
                     IReadOnlyList<EncodedAccessUnit> output = _encoder.Encode(
                         frame,
                         submittedFrames * frameDuration100ns,
                         frameDuration100ns);
-                    if (_ticks.ConfirmEncoderSubmission(_encoder.SubmittedFrameCount > 0))
+                    long submissionsAfter = _encoder.SubmittedFrameCount;
+                    if (_ticks.ConfirmNormalTickSubmission(submissionsBefore, submissionsAfter))
                         _videoEpoch.TrySetResult(Stopwatch.GetTimestamp());
                     submittedFrames++;
                     encodedUnits += output.Count;
@@ -344,8 +349,11 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
                 _broadcaster.SourceFps = (int)Math.Round(
                     (_capture.FramesArrived - lastCaptureFrames) / seconds);
                 _broadcaster.DupPercent = (int)Math.Round(duplicatePercent);
-                Console.WriteLine(
-                    $"[gpu-encode] encode delivery: {encodeFps:F1} fps, {encodedUnits} access units, debt {plan.Debt.DebtFrames} frames.");
+                Console.WriteLine(HardwareStallDiagnostic.FormatDelivery(
+                    encodeFps,
+                    encodedUnits,
+                    plan.Debt.DebtFrames,
+                    _encoder.GetProgressSnapshot()));
                 lastCaptureFrames = _capture.FramesArrived;
                 freshFrames = duplicateFrames = encodedUnits = 0;
                 lastReport = now;
@@ -373,12 +381,13 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
         return null;
     }
 
-    private static string RuntimeFailure(
+    private string RuntimeFailure(
         string reason,
         HardwareFallbackKind kind = HardwareFallbackKind.RuntimeFailure)
     {
         HardwareFallbackDecision decision = HardwareFallbackClassifier.Runtime(kind, reason);
         Console.Error.WriteLine($"[gpu-encode] {decision.Reason}");
+        _runtimeFailure(decision.Reason);
         return decision.Reason;
     }
 }

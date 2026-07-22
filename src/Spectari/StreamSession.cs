@@ -343,7 +343,7 @@ public sealed class StreamSession
             ? new FrameWriter(ffmpeg, capture.Width * capture.Height * 4)
             : null;
         AccessUnitWriter? accessUnitWriter = videoPlan.Lane == VideoInputLane.GpuTexture
-            ? new AccessUnitWriter(ffmpeg)
+            ? new AccessUnitWriter(ffmpeg, ct)
             : null;
         IVideoInputWriter writer = (IVideoInputWriter?)frameWriter ?? accessUnitWriter!;
         using var writerLifetime = TrackCleanup(writer.Dispose, "ffmpeg video-input writer");
@@ -352,23 +352,30 @@ public sealed class StreamSession
             server.BoundPrefix, serverLifetime, audioTeardown, writerLifetime,
             hardwareVideoLifetime,
             captureLifetime);
-        new VideoPipelineWatchdog(
-            capture,
-            writer,
-            broadcaster,
-            ffmpeg,
-            stallTeardown,
-            hardwareEncoder,
-            hardwareConverter,
-            _cts,
-            () => _pacingStage,
-            () => _teardownStage,
+        var stallExit = new PipelineStallExitCoordinator(
             stopReason =>
             {
                 _pipelineStalled = true;
                 _stallStopReason = stopReason;
                 SetTeardownStage("stall cancellation requested");
-            }).Start();
+            },
+            stallTeardown.Arm,
+            () => ffmpeg.AbortForStall(),
+            _cts.Cancel);
+        Action<string> hardwareRuntimeFailure = stopReason => stallExit.Begin(
+            stopReason,
+            () => $"pacing={_pacingStage}, teardown={_teardownStage}");
+        new VideoPipelineWatchdog(
+            capture,
+            writer,
+            broadcaster,
+            ffmpeg,
+            stallExit,
+            hardwareEncoder,
+            hardwareConverter,
+            ct,
+            () => _pacingStage,
+            () => _teardownStage).Start();
 
         string exitReason;
         try
@@ -398,7 +405,8 @@ public sealed class StreamSession
                     serverTask,
                     fps,
                     _videoEpoch,
-                    stage => _pacingStage = stage));
+                    stage => _pacingStage = stage,
+                    hardwareRuntimeFailure));
             try
             {
                 exitReason = pacingLane.Run(ct);
@@ -409,6 +417,7 @@ public sealed class StreamSession
                     HardwareFallbackKind.RuntimeFailure,
                     ex.Message.Replace('\r', ' ').Replace('\n', ' '));
                 Console.Error.WriteLine($"[gpu-encode] {runtimeFallback.Reason}");
+                hardwareRuntimeFailure(runtimeFallback.Reason);
                 exitReason = runtimeFallback.Reason;
             }
         }

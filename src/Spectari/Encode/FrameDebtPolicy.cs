@@ -38,9 +38,9 @@ internal sealed class HardwareFrameTickPolicy
             submission.Debt);
     }
 
-    internal bool ConfirmEncoderSubmission(bool encoderSubmitted)
+    internal bool ConfirmNormalTickSubmission(long submittedBefore, long submittedAfter)
     {
-        if (!encoderSubmitted || _epochAttached) return false;
+        if (submittedAfter <= submittedBefore || _epochAttached) return false;
         _epochAttached = true;
         return true;
     }

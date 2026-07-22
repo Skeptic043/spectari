@@ -27,9 +27,9 @@ public sealed class HardwareFrameTickPolicyTests
 
         policy.PlanAvailableTick(duplicateAvailable: false);
 
-        Assert.False(policy.ConfirmEncoderSubmission(encoderSubmitted: false));
-        Assert.True(policy.ConfirmEncoderSubmission(encoderSubmitted: true));
-        Assert.False(policy.ConfirmEncoderSubmission(encoderSubmitted: true));
+        Assert.False(policy.ConfirmNormalTickSubmission(0, 0));
+        Assert.True(policy.ConfirmNormalTickSubmission(0, 1));
+        Assert.False(policy.ConfirmNormalTickSubmission(1, 2));
     }
 
     [Fact]
@@ -38,7 +38,7 @@ public sealed class HardwareFrameTickPolicyTests
         var policy = new HardwareFrameTickPolicy(60);
 
         FrameDebtSnapshot debt = policy.RecordUnavailableTick();
-        bool epochAttached = policy.ConfirmEncoderSubmission(encoderSubmitted: false);
+        bool epochAttached = policy.ConfirmNormalTickSubmission(0, 0);
         HardwareFrameTickPlan recovery = policy.PlanAvailableTick(duplicateAvailable: true);
 
         Assert.Equal(1, debt.DebtFrames);
@@ -46,6 +46,16 @@ public sealed class HardwareFrameTickPolicyTests
         Assert.Equal(1, recovery.CurrentFrameSubmissions);
         Assert.Equal(1, recovery.DuplicateSubmissions);
         Assert.Equal(0, recovery.Debt.DebtFrames);
+    }
+
+    [Fact]
+    public void CollectTickSubmissionCannotAttachEpochOnNextNormalTickWithoutProgress()
+    {
+        var policy = new HardwareFrameTickPolicy(60);
+        policy.RecordUnavailableTick();
+
+        Assert.False(policy.ConfirmNormalTickSubmission(1, 1));
+        Assert.True(policy.ConfirmNormalTickSubmission(1, 2));
     }
 
     [Fact]
