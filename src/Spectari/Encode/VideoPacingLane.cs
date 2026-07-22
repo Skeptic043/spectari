@@ -70,7 +70,7 @@ internal sealed class RawVideoPacingLane : IVideoPacingLane
         long next = Stopwatch.GetTimestamp() + ticksPerFrame;
         long lastVersion = 0;
         bool videoEpochProduced = false;
-        long freshCount = 0, dupCount = 0, pacingSlips = 0, lastCompositorFrames = 0;
+        long freshCount = 0, dupCount = 0, pacingSlips = 0;
         long lastReport = Stopwatch.GetTimestamp();
         long reportInterval = Stopwatch.Frequency * 2;
 
@@ -150,9 +150,8 @@ internal sealed class RawVideoPacingLane : IVideoPacingLane
                 double dupPct = total > 0 ? dupCount * 100.0 / total : 0;
                 double windowSec = (double)(now - lastReport) / Stopwatch.Frequency;
                 _broadcaster.SourceFps = (int)Math.Round(
-                    (_capture.FramesArrived - lastCompositorFrames) / windowSec);
+                    total / windowSec);
                 _broadcaster.DupPercent = (int)Math.Round(dupPct);
-                lastCompositorFrames = _capture.FramesArrived;
                 freshCount = dupCount = 0;
                 lastReport = now;
             }
@@ -315,7 +314,6 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
     {
         long lastReport = Stopwatch.GetTimestamp();
         long reportInterval = Stopwatch.Frequency * 2;
-        long lastCaptureFrames = capture.FramesArrived;
         long lastSubmittedFrames = pullLoop.SubmittedFrames;
         long lastAccessUnits = pullLoop.AccessUnitsWritten;
 
@@ -353,13 +351,12 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
                 long submitted = pullLoop.SubmittedFrames - lastSubmittedFrames;
                 long accessUnits = pullLoop.AccessUnitsWritten - lastAccessUnits;
                 _broadcaster.SourceFps = (int)Math.Round(
-                    (capture.FramesArrived - lastCaptureFrames) / seconds);
+                    submitted / seconds);
                 _broadcaster.DupPercent = 0;
                 Console.WriteLine(HardwareStallDiagnostic.FormatDelivery(
                     submitted / seconds,
                     accessUnits,
                     _encoder.GetProgressSnapshot()));
-                lastCaptureFrames = capture.FramesArrived;
                 lastSubmittedFrames = pullLoop.SubmittedFrames;
                 lastAccessUnits = pullLoop.AccessUnitsWritten;
                 lastReport = now;
@@ -368,7 +365,10 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
 
             if (step.DidWork) continue;
             _setStage("waiting-for-capture");
-            if (!capture.WaitForFreshFrame(pullLoop.LastSubmittedVersion, 1))
+            bool frameReady = capture.WaitForFreshFrame(
+                pullLoop.LastSubmittedVersion,
+                1);
+            if (frameReady)
                 WaitHandle.WaitAny([cancellationToken.WaitHandle, wake], 1);
         }
 

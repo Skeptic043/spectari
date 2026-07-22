@@ -50,7 +50,7 @@ public sealed class Broadcaster
     internal long LastFragmentTicks => Interlocked.Read(ref _lastFragmentTicks);
 
     // Updated by the pacing loop each stats window; read by /api/stats.
-    public volatile int SourceFps;   // compositor frames/sec (how fast the source actually changes)
+    public volatile int SourceFps;   // frames submitted to the active video lane per second
     public volatile int DupPercent;  // % of encoded frames that were repeats (meaningful during motion only)
     public volatile string State = "starting"; // starting → live → stopped/failed
     public volatile bool WaitingForWindow;

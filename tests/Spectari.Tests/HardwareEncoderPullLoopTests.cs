@@ -132,9 +132,101 @@ public sealed class HardwareEncoderPullLoopTests
         Assert.Equal("stopped", result.Reason);
     }
 
+    [Fact]
+    public void FasterCaptureConvergesToSessionSubmissionRate()
+    {
+        const int captureFramesPerSecond = 120;
+        const int simulationSeconds = 120;
+        var harness = new PullLoopHarness(
+            poolCapacity: FieldInFlightDepth + 1,
+            creditEverySteps: 1,
+            holdFrames: FieldInFlightDepth,
+            outputLagFrames: FieldInFlightDepth);
+
+        int captureFrames = captureFramesPerSecond * simulationSeconds;
+        for (int frame = 1; frame <= captureFrames; frame++)
+        {
+            harness.StepAt(
+                frame * Stopwatch.Frequency / captureFramesPerSecond);
+        }
+
+        double submittedRate = harness.Encoder.SubmittedVersions.Count /
+            (double)simulationSeconds;
+        Assert.InRange(submittedRate, 59.9, 60.1);
+        Assert.Equal(
+            harness.Encoder.SubmittedVersions.Count,
+            harness.Encoder.SubmittedVersions.Distinct().Count());
+    }
+
+    [Fact]
+    public void JitteredFramesStraddlingDeadlinesDoNotDepressSubmissionRate()
+    {
+        const int simulationSeconds = 120;
+        var harness = new PullLoopHarness(
+            poolCapacity: FieldInFlightDepth + 1,
+            creditEverySteps: 1,
+            holdFrames: FieldInFlightDepth,
+            outputLagFrames: FieldInFlightDepth);
+
+        long timestampTicks = 0;
+        long simulationTicks = simulationSeconds * Stopwatch.Frequency;
+        int frame = 0;
+        while (timestampTicks < simulationTicks)
+        {
+            harness.StepAt(timestampTicks);
+            int intervalMilliseconds = frame++ % 2 == 0 ? 7 : 9;
+            timestampTicks += intervalMilliseconds * Stopwatch.Frequency / 1000;
+        }
+
+        double submittedRate = harness.Encoder.SubmittedVersions.Count /
+            (double)simulationSeconds;
+        Assert.InRange(submittedRate, 59.9, 60.1);
+    }
+
+    [Fact]
+    public void CaptureStallPreservesTimestampGapAndCannotBurstOnResume()
+    {
+        var harness = new PullLoopHarness(
+            poolCapacity: 16,
+            creditEverySteps: 1,
+            holdFrames: 0,
+            outputLagFrames: 0);
+        long frameInterval = Stopwatch.Frequency / FieldFramesPerSecond;
+
+        harness.StepAt(0);
+        harness.StepAt(frameInterval);
+        int beforeStall = harness.Encoder.SubmittedVersions.Count;
+        harness.Encoder.GrantCredits(10);
+
+        long resumeTicks = Stopwatch.Frequency * 10;
+        for (int frame = 0; frame < 10; frame++)
+            harness.StepAt(resumeTicks);
+
+        Assert.Equal(
+            beforeStall + 1,
+            harness.Encoder.SubmittedVersions.Count);
+        harness.StepAt(resumeTicks + frameInterval - 1);
+        Assert.Equal(
+            beforeStall + 1,
+            harness.Encoder.SubmittedVersions.Count);
+        harness.StepAt(resumeTicks + frameInterval);
+        Assert.Equal(
+            beforeStall + 2,
+            harness.Encoder.SubmittedVersions.Count);
+
+        IReadOnlyList<long> timestamps =
+            harness.Encoder.SubmittedPresentationTimes100ns;
+        Assert.True(
+            timestamps[2] - timestamps[1] > TimeSpan.FromSeconds(9).Ticks);
+        Assert.Equal(
+            harness.Encoder.SubmittedVersions.Count,
+            harness.Encoder.SubmittedVersions.Distinct().Count());
+    }
+
     private sealed class PullLoopHarness
     {
         private long _step;
+        private long _captureVersion;
 
         internal PullLoopHarness(
             int poolCapacity,
@@ -177,18 +269,23 @@ public sealed class HardwareEncoderPullLoopTests
 
         internal HardwarePullStepResult Step()
         {
-            Capture.Publish(++_step);
-            return Loop.Step(CurrentTimestamp());
+            long step = ++_step;
+            return StepAt(
+                step * Stopwatch.Frequency / FieldFramesPerSecond);
+        }
+
+        internal HardwarePullStepResult StepAt(long timestampTicks)
+        {
+            Capture.Publish(++_captureVersion);
+            return Loop.Step(timestampTicks);
         }
 
         internal long NextTimestamp()
         {
-            Capture.Publish(Interlocked.Increment(ref _step));
-            return CurrentTimestamp();
+            long step = Interlocked.Increment(ref _step);
+            Capture.Publish(Interlocked.Increment(ref _captureVersion));
+            return step * Stopwatch.Frequency / FieldFramesPerSecond;
         }
-
-        private long CurrentTimestamp() =>
-            _step * Stopwatch.Frequency / FieldFramesPerSecond;
     }
 
     private sealed class FakeCapture(bool advanceOnWait) : IHardwareEncodeCapture
@@ -294,6 +391,7 @@ public sealed class HardwareEncoderPullLoopTests
         private readonly List<HeldFrame> _held = [];
         private readonly List<PendingOutput> _outputs = [];
         private readonly List<long> _submittedVersions = [];
+        private readonly List<long> _submittedPresentationTimes100ns = [];
         private long _lastPolledTicks = long.MinValue;
         private long _step = -1;
         private int _inputCredits;
@@ -315,7 +413,11 @@ public sealed class HardwareEncoderPullLoopTests
 
         public long SubmittedFrameCount => Interlocked.Read(ref _submittedCount);
         internal IReadOnlyList<long> SubmittedVersions => _submittedVersions;
+        internal IReadOnlyList<long> SubmittedPresentationTimes100ns =>
+            _submittedPresentationTimes100ns;
         internal bool CreditFamine { get; set; }
+
+        internal void GrantCredits(int credits) => _inputCredits += credits;
 
         public HardwarePullEncoderProgress GetProgressSnapshot() => new(
             _held.Count,
@@ -359,6 +461,7 @@ public sealed class HardwareEncoderPullLoopTests
             if (_inputCredits == 0) return false;
             _inputCredits--;
             _submittedVersions.Add(frame.CaptureVersion);
+            _submittedPresentationTimes100ns.Add(presentationTime100ns);
             Interlocked.Increment(ref _submittedCount);
             _held.Add(new HeldFrame(frame, _step + _holdFrames));
             _outputs.Add(new PendingOutput(

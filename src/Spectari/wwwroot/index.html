@@ -143,7 +143,7 @@ let stat = { delay: 0, bytes: 0, bytesWindowStart: performance.now(), kbps: 0,
              droppedLast: 0, totalLast: 0, dropWindow: "–",
              sourceFps: "–", dupPct: "–" };
 
-// Host-side capture stats (source fps / dup %) - polled while the overlay is open.
+// Host-side stream stats (submitted fps / dup %) - polled while the overlay is open.
 setInterval(() => {
   if (!statsEl.classList.contains("show")) return;
   fetch("/api/stats").then(r => r.json()).then(s => {
@@ -352,7 +352,7 @@ setInterval(() => {
     ? (video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
   statsEl.textContent =
     `stream   ${video.videoWidth}x${video.videoHeight}@${hello ? hello.fps : "?"}\n` +
-    `source   ${stat.sourceFps} fps (dup ${stat.dupPct}%)\n` +
+    `streamed ${stat.sourceFps} fps (dup ${stat.dupPct}%)\n` +
     `display  ${stat.displayFps} fps shown\n` +
     `page     ${raf.fps} fps (compositor)\n` +
     `dropped  ${stat.dropWindow} last 1s\n` +
