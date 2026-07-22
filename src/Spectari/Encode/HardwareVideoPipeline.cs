@@ -134,6 +134,8 @@ internal sealed class HardwareVideoPipeline : IDisposable
                 $"[encoder] active video path: GPU NV12 textures -> Media Foundation H.264 ({_encoder.FriendlyName}) -> ffmpeg stream copy.");
             Console.WriteLine(
                 $"[encoder] GPU texture path: capture, conversion, and encoder share adapter {Plan.HardwareAdapter!.Value.Luid}.");
+            Console.WriteLine(
+                "[encoder] GPU color path: full-range sRGB desktop -> limited-range BT.601 NV12 and H.264 VUI.");
             return;
         }
 
