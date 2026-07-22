@@ -115,7 +115,7 @@ internal sealed class Nv12FrameConverter : IDisposable
     private readonly GpuTextureCaptureFrame _capture;
     private readonly GpuLaneDevice _laneDevice;
     private readonly ID3D11VideoDevice _videoDevice;
-    private readonly ID3D11VideoContext _videoContext;
+    private readonly ID3D11VideoContext1 _videoContext;
     private readonly ID3D11VideoProcessorEnumerator _enumerator;
     private readonly ID3D11VideoProcessor _processor;
     private readonly ID3D11Texture2D _bgraInput;
@@ -142,7 +142,7 @@ internal sealed class Nv12FrameConverter : IDisposable
         try
         {
             _videoDevice = _laneDevice.Device.QueryInterface<ID3D11VideoDevice>();
-            _videoContext = _laneDevice.Context.QueryInterface<ID3D11VideoContext>();
+            _videoContext = _laneDevice.Context.QueryInterface<ID3D11VideoContext1>();
 
             var content = new VideoProcessorContentDescription
             {
@@ -159,6 +159,13 @@ internal sealed class Nv12FrameConverter : IDisposable
                 ref content,
                 out _enumerator).CheckError();
             _videoDevice.CreateVideoProcessor(_enumerator, 0, out _processor).CheckError();
+            _videoContext.VideoProcessorSetStreamColorSpace1(
+                _processor,
+                0,
+                SdrVideoColorConvention.ProcessorInput);
+            _videoContext.VideoProcessorSetOutputColorSpace1(
+                _processor,
+                SdrVideoColorConvention.ProcessorOutput);
 
             _bgraInput = _laneDevice.Device.CreateTexture2D(new Texture2DDescription
             {

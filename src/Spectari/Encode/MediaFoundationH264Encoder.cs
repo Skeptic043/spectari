@@ -489,6 +489,7 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
             type.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive).CheckError();
             type.Set(MediaTypeAttributeKeys.Mpeg2Profile, 100u).CheckError();
             type.Set(MediaTypeAttributeKeys.MaxKeyframeSpacing, (uint)parameters.GopFrames).CheckError();
+            SetColorAttributes(type);
             return type;
         }
         catch
@@ -511,6 +512,7 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
                 (uint)parameters.FramesPerSecond, 1).CheckError();
             MediaFactory.MFSetAttributeRatio(type, MediaTypeAttributeKeys.PixelAspectRatio, 1, 1).CheckError();
             type.Set(MediaTypeAttributeKeys.InterlaceMode, (uint)VideoInterlaceMode.Progressive).CheckError();
+            SetColorAttributes(type);
             return type;
         }
         catch
@@ -518,6 +520,12 @@ internal sealed class MediaFoundationH264Encoder : IHardwareVideoEncoder
             type.Dispose();
             throw;
         }
+    }
+
+    private static void SetColorAttributes(IMFMediaType type)
+    {
+        foreach ((Guid key, uint value) in SdrVideoColorConvention.EncoderMediaTypeAttributes)
+            type.Set(key, value).CheckError();
     }
 
     private void ConfigureCodecApi(HardwareVideoEncoderParameters parameters)
