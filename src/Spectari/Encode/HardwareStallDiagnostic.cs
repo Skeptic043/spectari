@@ -8,8 +8,26 @@ internal static class HardwareStallDiagnostic
         double framesPerSecond,
         long accessUnits,
         int debtFrames,
-        HardwareEncoderProgress encoder) =>
-        $"[gpu-encode] encode delivery: {framesPerSecond:F1} fps, {accessUnits} access units, debt {debtFrames} frames, pending-depth={encoder.PendingQueueDepth}, input-credits={encoder.InputCredits}.";
+        HardwareEncoderProgress encoder,
+        long inputCreditsGranted) =>
+        $"[gpu-encode] encode delivery: {framesPerSecond:F1} fps, {accessUnits} access units, debt {debtFrames} frames, pending-depth={encoder.PendingQueueDepth}, submitted-depth={encoder.SubmittedQueueDepth}, input-credits={encoder.InputCredits}, input-credits-granted={inputCreditsGranted}.";
+
+    internal static long CountInputCreditsGranted(
+        long previousSubmittedFrames,
+        int previousInputCredits,
+        long submittedFrames,
+        int inputCredits)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(previousSubmittedFrames);
+        ArgumentOutOfRangeException.ThrowIfNegative(previousInputCredits);
+        ArgumentOutOfRangeException.ThrowIfNegative(submittedFrames);
+        ArgumentOutOfRangeException.ThrowIfNegative(inputCredits);
+        if (submittedFrames < previousSubmittedFrames)
+            throw new ArgumentException("Submitted frame count must be monotonic.", nameof(submittedFrames));
+
+        return checked(
+            submittedFrames - previousSubmittedFrames + inputCredits - previousInputCredits);
+    }
 
     internal static string Format(
         FrameLeaseAccounting pool,

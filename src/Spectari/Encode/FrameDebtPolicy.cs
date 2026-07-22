@@ -14,9 +14,15 @@ internal readonly record struct HardwareFrameTickPlan(
     int DuplicateSubmissions,
     FrameDebtSnapshot Debt);
 
+internal readonly record struct HardwareFrameTickAdmission(
+    bool Accepted,
+    FrameDebtSnapshot Debt);
+
 /// <summary>Pure timing contract for fixed-rate hardware submissions.</summary>
 internal sealed class HardwareFrameTickPolicy
 {
+    internal const int MaximumPendingQueueDepth = 3;
+
     private readonly FrameDebtPolicy _debt;
     private bool _epochAttached;
 
@@ -28,6 +34,16 @@ internal sealed class HardwareFrameTickPolicy
     internal FrameDebtSnapshot CurrentDebt => _debt.Current;
 
     internal FrameDebtSnapshot RecordUnavailableTick() => _debt.RecordDroppedTick();
+
+    internal HardwareFrameTickAdmission AdmitEncoderTick(int pendingQueueDepth)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pendingQueueDepth);
+        int plannedSubmissions = _debt.Current.DebtFrames > 0 ? 2 : 1;
+        bool accepted = pendingQueueDepth + plannedSubmissions <= MaximumPendingQueueDepth;
+        return accepted
+            ? new(true, _debt.Current)
+            : new(false, _debt.RecordDroppedTick());
+    }
 
     internal HardwareFrameTickPlan PlanAvailableTick(bool duplicateAvailable)
     {

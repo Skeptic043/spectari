@@ -236,6 +236,8 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
         long lastReport = Stopwatch.GetTimestamp();
         long reportInterval = Stopwatch.Frequency * 2;
         long lastDebtLog = 0;
+        long lastReportSubmittedFrames = _encoder.SubmittedFrameCount;
+        int lastReportInputCredits = _encoder.GetProgressSnapshot().InputCredits;
 
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -255,36 +257,30 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
             bool fresh = currentVersion != lastVersion;
             lastVersion = currentVersion;
 
+            HardwareEncoderProgress encoderProgress = _encoder.GetProgressSnapshot();
+            HardwareFrameTickAdmission admission = _ticks.AdmitEncoderTick(
+                encoderProgress.PendingQueueDepth);
+            if (!admission.Accepted)
+            {
+                string? backpressureFailure = CollectAfterUnavailableTick(
+                    admission.Debt,
+                    $"pending queue cap {HardwareFrameTickPolicy.MaximumPendingQueueDepth} reached",
+                    ref encodedUnits,
+                    ref lastDebtLog);
+                if (backpressureFailure is not null) return backpressureFailure;
+                continue;
+            }
+
             _setStage("gpu-scale-convert");
             if (!_converter.TryConvert(_gpuCapture, out VideoFrameLease? current, out Nv12ConvertFailure convertFailure))
             {
                 FrameDebtSnapshot debt = _ticks.RecordUnavailableTick();
-                _setStage("hardware-output-collect");
-                IReadOnlyList<EncodedAccessUnit> collected = _encoder.CollectOutput();
-                encodedUnits += collected.Count;
-                if (collected.Count > 0)
-                {
-                    _setStage("access-unit-output");
-                    _output.Write(collected);
-                }
-                long debtNow = Stopwatch.GetTimestamp();
-                if (debtNow - lastDebtLog >= Stopwatch.Frequency || debt.StallSignal)
-                {
-                    Console.Error.WriteLine(
-                        $"[gpu-encode] frame debt: {debt.DebtFrames} frames, sync error {debt.SyncError.TotalMilliseconds:F1} ms ({convertFailure}).");
-                    lastDebtLog = debtNow;
-                }
-                if (debt.StallSignal)
-                {
-                    Console.Error.WriteLine(HardwareStallDiagnostic.Format(
-                        _converter.PoolAccounting,
-                        _encoder.GetProgressSnapshot(),
-                        _writer.GetProgressSnapshot(),
-                        debtNow));
-                    return RuntimeFailure(
-                        $"sustained frame debt reached {debt.DebtFrames} frames after {convertFailure}",
-                        HardwareFallbackKind.SustainedFrameDebt);
-                }
+                string? convertFailureResult = CollectAfterUnavailableTick(
+                    debt,
+                    convertFailure.ToString(),
+                    ref encodedUnits,
+                    ref lastDebtLog);
+                if (convertFailureResult is not null) return convertFailureResult;
                 continue;
             }
 
@@ -349,14 +345,24 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
                 _broadcaster.SourceFps = (int)Math.Round(
                     (_capture.FramesArrived - lastCaptureFrames) / seconds);
                 _broadcaster.DupPercent = (int)Math.Round(duplicatePercent);
+                HardwareEncoderProgress reportProgress = _encoder.GetProgressSnapshot();
+                long reportSubmittedFrames = _encoder.SubmittedFrameCount;
+                long inputCreditsGranted = HardwareStallDiagnostic.CountInputCreditsGranted(
+                    lastReportSubmittedFrames,
+                    lastReportInputCredits,
+                    reportSubmittedFrames,
+                    reportProgress.InputCredits);
                 Console.WriteLine(HardwareStallDiagnostic.FormatDelivery(
                     encodeFps,
                     encodedUnits,
                     plan.Debt.DebtFrames,
-                    _encoder.GetProgressSnapshot()));
+                    reportProgress,
+                    inputCreditsGranted));
                 lastCaptureFrames = _capture.FramesArrived;
                 freshFrames = duplicateFrames = encodedUnits = 0;
                 lastReport = now;
+                lastReportSubmittedFrames = reportSubmittedFrames;
+                lastReportInputCredits = reportProgress.InputCredits;
                 reportInterval = Stopwatch.Frequency * 10;
             }
         }
@@ -366,6 +372,40 @@ internal sealed class HardwareVideoPacingLane : IVideoPacingLane
         if (drained.Count > 0)
             _output.Write(drained);
         return "stopped";
+    }
+
+    private string? CollectAfterUnavailableTick(
+        FrameDebtSnapshot debt,
+        string reason,
+        ref long encodedUnits,
+        ref long lastDebtLog)
+    {
+        _setStage("hardware-output-collect");
+        IReadOnlyList<EncodedAccessUnit> collected = _encoder.CollectOutput();
+        encodedUnits += collected.Count;
+        if (collected.Count > 0)
+        {
+            _setStage("access-unit-output");
+            _output.Write(collected);
+        }
+
+        long debtNow = Stopwatch.GetTimestamp();
+        if (debtNow - lastDebtLog >= Stopwatch.Frequency || debt.StallSignal)
+        {
+            Console.Error.WriteLine(
+                $"[gpu-encode] frame debt: {debt.DebtFrames} frames, sync error {debt.SyncError.TotalMilliseconds:F1} ms ({reason}).");
+            lastDebtLog = debtNow;
+        }
+        if (!debt.StallSignal) return null;
+
+        Console.Error.WriteLine(HardwareStallDiagnostic.Format(
+            _converter.PoolAccounting,
+            _encoder.GetProgressSnapshot(),
+            _writer.GetProgressSnapshot(),
+            debtNow));
+        return RuntimeFailure(
+            $"sustained frame debt reached {debt.DebtFrames} frames after {reason}",
+            HardwareFallbackKind.SustainedFrameDebt);
     }
 
     private string? SupervisePipeline()
