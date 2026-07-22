@@ -39,7 +39,7 @@ public sealed class DiagnosticLogEventTextTests
             60);
 
         Assert.Equal(
-            "[window-capture] MinUpdateInterval applied: 16.667 ms (60 fps target)",
+            "[window-capture] MinUpdateInterval applied: 8.333 ms (60 fps target)",
             DiagnosticLogEventText.WindowCaptureMinUpdateInterval(result));
     }
 

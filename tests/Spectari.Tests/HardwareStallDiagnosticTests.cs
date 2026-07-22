@@ -6,19 +6,38 @@ namespace Spectari.Tests;
 public sealed class HardwareStallDiagnosticTests
 {
     [Fact]
-    public void DeliveryFormatIncludesPendingDepthAndInputCredits()
+    public void DeliveryFormatIncludesPendingSubmittedAndCreditMeasurements()
     {
-        var encoder = new HardwareEncoderProgress(7, 0, 1, 0, 0);
+        var encoder = new HardwareEncoderProgress(2, 4, 1, 0, 0);
 
         string diagnostic = HardwareStallDiagnostic.FormatDelivery(
             59.94,
             600,
             2,
-            encoder);
+            encoder,
+            inputCreditsGranted: 598);
 
         Assert.Equal(
-            "[gpu-encode] encode delivery: 59.9 fps, 600 access units, debt 2 frames, pending-depth=7, input-credits=1.",
+            "[gpu-encode] encode delivery: 59.9 fps, 600 access units, debt 2 frames, pending-depth=2, submitted-depth=4, input-credits=1, input-credits-granted=598.",
             diagnostic);
+    }
+
+    [Theory]
+    [InlineData(100, 1, 699, 0, 598)]
+    [InlineData(100, 0, 100, 2, 2)]
+    [InlineData(100, 1, 101, 0, 0)]
+    public void GrantedInputCreditCountUsesSubmissionsAndOutstandingCreditDelta(
+        long previousSubmittedFrames,
+        int previousInputCredits,
+        long submittedFrames,
+        int inputCredits,
+        long expected)
+    {
+        Assert.Equal(expected, HardwareStallDiagnostic.CountInputCreditsGranted(
+            previousSubmittedFrames,
+            previousInputCredits,
+            submittedFrames,
+            inputCredits));
     }
 
     [Fact]

@@ -71,4 +71,52 @@ public sealed class HardwareFrameTickPolicyTests
         Assert.Equal(1, plan.DuplicateSubmissions);
         Assert.Equal(1, plan.Debt.DebtFrames);
     }
+
+    [Fact]
+    public void PendingQueueAtLimitRecordsDebtWithoutAdmittingAFrame()
+    {
+        var policy = new HardwareFrameTickPolicy(60);
+
+        HardwareFrameTickAdmission blocked = policy.AdmitEncoderTick(
+            HardwareFrameTickPolicy.MaximumPendingQueueDepth);
+        HardwareFrameTickAdmission recovery = policy.AdmitEncoderTick(
+            HardwareFrameTickPolicy.MaximumPendingQueueDepth - 2);
+        HardwareFrameTickPlan recovered = policy.PlanAvailableTick(duplicateAvailable: true);
+
+        Assert.False(blocked.Accepted);
+        Assert.Equal(1, blocked.Debt.DebtFrames);
+        Assert.True(recovery.Accepted);
+        Assert.Equal(1, recovered.DuplicateSubmissions);
+        Assert.Equal(0, recovered.Debt.DebtFrames);
+    }
+
+    [Fact]
+    public void DebtRepaymentReservesTwoPendingSlotsBeforeAdmission()
+    {
+        var policy = new HardwareFrameTickPolicy(60);
+        policy.RecordUnavailableTick();
+
+        HardwareFrameTickAdmission rejected = policy.AdmitEncoderTick(
+            HardwareFrameTickPolicy.MaximumPendingQueueDepth - 1);
+        HardwareFrameTickAdmission accepted = policy.AdmitEncoderTick(
+            HardwareFrameTickPolicy.MaximumPendingQueueDepth - 2);
+
+        Assert.False(rejected.Accepted);
+        Assert.Equal(2, rejected.Debt.DebtFrames);
+        Assert.True(accepted.Accepted);
+        Assert.Equal(2, accepted.Debt.DebtFrames);
+    }
+
+    [Fact]
+    public void QueueAdmissionNeverExceedsTheThreeFrameBound()
+    {
+        var policy = new HardwareFrameTickPolicy(60);
+
+        HardwareFrameTickAdmission admission = policy.AdmitEncoderTick(
+            HardwareFrameTickPolicy.MaximumPendingQueueDepth - 1);
+
+        Assert.True(admission.Accepted);
+        Assert.Equal(0, admission.Debt.DebtFrames);
+        Assert.Equal(3, HardwareFrameTickPolicy.MaximumPendingQueueDepth);
+    }
 }

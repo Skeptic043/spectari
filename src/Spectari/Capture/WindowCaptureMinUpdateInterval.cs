@@ -22,11 +22,14 @@ internal static class WindowCaptureMinUpdateInterval
 {
     private const int NoInterface = unchecked((int)0x80004002);
     internal const int TargetFramesPerSecond = 60;
+    private const int DeliveryHeadroomFactor = 2;
     private const int PutMinUpdateIntervalSlot = 7;
     private static readonly Guid InterfaceId = new("67C0EA62-1F85-5061-925A-239BE0AC09CB");
 
     internal static TimeSpan TargetInterval { get; } = TimeSpan.FromTicks(
-        (long)Math.Round(TimeSpan.TicksPerSecond / (double)TargetFramesPerSecond));
+        (long)Math.Round(
+            TimeSpan.TicksPerSecond /
+            (double)(TargetFramesPerSecond * DeliveryHeadroomFactor)));
 
     internal static WindowCaptureMinUpdateIntervalResult Apply(GraphicsCaptureSession session)
     {
