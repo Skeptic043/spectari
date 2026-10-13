@@ -226,12 +226,12 @@ function connect() {
         const bootstrap = await response.json();
         if (closedSocket !== ws) return;
         if (bootstrap.key) viewKey = bootstrap.key;
-        setStatus(false, bootstrap.state === "idle" ? "not streaming yet" : "reconnecting…");
+        setStatus(false, bootstrap.state === "idle" ? "not streaming yet" : "reconnectingâ€¦");
       } else {
         setStatus(false, "This stream needs its current viewer link");
       }
     } catch (_) {
-      if (closedSocket === ws) setStatus(false, "reconnecting…");
+      if (closedSocket === ws) setStatus(false, "reconnectingâ€¦");
     }
     if (closedSocket !== ws) return;
     setTimeout(() => { if (closedSocket === ws) connect(); }, retryMs);
