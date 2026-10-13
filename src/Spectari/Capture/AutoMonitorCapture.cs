@@ -19,10 +19,15 @@ public sealed class AutoMonitorCapture : ICaptureSource
 
     private readonly IntPtr _hMonitor;
     private readonly Lock _swapLock = new();
-    private readonly Thread _watchdog;
+    // Native retirement waits for readers without holding the publication lock.
+    private readonly object _readLock = new();
+    private readonly Thread? _watchdog;
+    private readonly Func<bool, ICaptureSource> _createCapture;
+    private readonly CancellationToken _stop;
+    private bool _disposed;
     private readonly CancellationTokenSource _cts = new();
 
-    private ICaptureSource _active;
+    private ICaptureSource? _active;
     private bool _usingDuplication;
     private long _versionOffset;
     private long _lastSeenVersion;
@@ -39,11 +44,17 @@ public sealed class AutoMonitorCapture : ICaptureSource
     public string DriverVersion { get; }
 
     public AutoMonitorCapture(IntPtr hMonitor)
+        : this(hMonitor, duplication => duplication ? new DuplicationCapture(hMonitor)
+            : ScreenCapture.ForMonitor(hMonitor), true) { }
+
+    internal AutoMonitorCapture(IntPtr hMonitor, Func<bool, ICaptureSource> createCapture, bool startWatchdog)
     {
+        _createCapture = createCapture;
+        _stop = _cts.Token;
         _hMonitor = hMonitor;
         try
         {
-            _active = new DuplicationCapture(hMonitor);
+            _active = _createCapture(true);
             _usingDuplication = true;
         }
         catch (Exception ex)
@@ -51,7 +62,7 @@ public sealed class AutoMonitorCapture : ICaptureSource
             // Duplication can't start here (rotated display, another capture app,
             // transition in progress) - fall back to standard capture.
             Console.WriteLine($"[capture] desktop duplication unavailable ({ex.Message}); using standard capture");
-            _active = ScreenCapture.ForMonitor(hMonitor);
+            _active = _createCapture(false);
         }
         Width = _active.Width;
         Height = _active.Height;
@@ -60,36 +71,53 @@ public sealed class AutoMonitorCapture : ICaptureSource
         AdapterLuid = _active.AdapterLuid;
         DriverVersion = _active.DriverVersion;
 
-        _watchdog = new Thread(WatchdogLoop) { IsBackground = true, Name = "capture-watchdog" };
-        _watchdog.Start();
+        if (startWatchdog)
+        {
+            _watchdog = new Thread(WatchdogLoop) { IsBackground = true, Name = "capture-watchdog" };
+            _watchdog.Start();
+        }
     }
 
-    public long FrameVersion { get { lock (_swapLock) return _versionOffset + _active.FrameVersion; } }
+    public long FrameVersion { get { lock (_swapLock) return _versionOffset + (_active?.FrameVersion ?? 0); } }
     public long FramesArrived => FrameVersion;
     public Exception? CaptureError => _bothFailed;
-    public bool CursorEnabled { set { _cursorEnabled = value; lock (_swapLock) _active.CursorEnabled = value; } }
+    public bool CursorEnabled { set { lock (_swapLock) { _cursorEnabled = value; if (_active is not null) _active.CursorEnabled = value; } } }
 
     public bool WaitForFreshFrame(long sinceVersion, int timeoutMs)
     {
-        ICaptureSource active;
+        lock (_readLock)
+        {
+        ICaptureSource? active;
         long offset;
         lock (_swapLock) { active = _active; offset = _versionOffset; }
-        bool fresh = active.WaitForFreshFrame(sinceVersion - offset, timeoutMs);
+        bool fresh = active is not null && active.WaitForFreshFrame(sinceVersion - offset, timeoutMs);
         if (fresh) _lastFreshTicks = Stopwatch.GetTimestamp();
         return fresh;
+        }
     }
 
     public bool TryReadFrame(byte[] buffer)
     {
-        lock (_swapLock) return _active.TryReadFrame(buffer);
+        lock (_readLock)
+        {
+        ICaptureSource? active;
+        lock (_swapLock) active = _active;
+        return active?.TryReadFrame(buffer) ?? false;
+        }
     }
 
     private void WatchdogLoop()
     {
-        while (!_cts.IsCancellationRequested)
+        bool failureLogged = false;
+        while (!_stop.IsCancellationRequested)
         {
             Thread.Sleep(500);
-            try { Evaluate(); } catch { /* never kill the watchdog */ }
+            try { Evaluate(); failureLogged = false; }
+            catch (Exception ex)
+            {
+                if (!failureLogged) Console.Error.WriteLine($"[capture] watchdog evaluation failed: {ex.Message}");
+                failureLogged = true;
+            }
         }
     }
 
@@ -99,8 +127,9 @@ public sealed class AutoMonitorCapture : ICaptureSource
         double sinceSwapMs = (now - _lastSwapAttemptTicks) * 1000.0 / Stopwatch.Frequency;
         if (sinceSwapMs < SwapCooldownMs && _lastSwapAttemptTicks != 0) return;
 
-        ICaptureSource active;
+        ICaptureSource? active;
         lock (_swapLock) active = _active;
+        if (active is null) return;
 
         // Track freshness independently of the pacing loop (covers the startup gate too).
         long version = FrameVersion;
@@ -126,47 +155,66 @@ public sealed class AutoMonitorCapture : ICaptureSource
         }
     }
 
-    private void Swap(bool toDuplication, string reason)
+    internal void Swap(bool toDuplication, string reason)
     {
+        ICaptureSource? expected;
+        lock (_swapLock)
+        {
+            if (_disposed) return;
+            expected = _active;
+        }
         _lastSwapAttemptTicks = Stopwatch.GetTimestamp();
-        Console.WriteLine($"[capture] switching to {(toDuplication ? "desktop duplication" : "standard capture")}: {reason}");
+        Console.WriteLine($"[capture] switching backend: {reason}");
+        ICaptureSource? fresh = null;
+        ICaptureSource? retired = null;
         try
         {
-            ICaptureSource fresh = toDuplication
-                ? new DuplicationCapture(_hMonitor)
-                : ScreenCapture.ForMonitor(_hMonitor);
+            fresh = _createCapture(toDuplication);
             if (fresh.Width != Width || fresh.Height != Height)
-            {
-                fresh.Dispose();
-                throw new InvalidOperationException($"backend resolution mismatch ({fresh.Width}x{fresh.Height} vs {Width}x{Height})");
-            }
-            fresh.CursorEnabled = _cursorEnabled;
+                throw new InvalidOperationException("backend resolution mismatch");
             lock (_swapLock)
             {
-                _versionOffset += _active.FrameVersion;
-                var old = _active;
+                if (_disposed || !ReferenceEquals(_active, expected)) return;
+                fresh.CursorEnabled = _cursorEnabled;
+                _versionOffset += _active?.FrameVersion ?? 0;
+                retired = _active;
                 _active = fresh;
+                fresh = null;
                 _usingDuplication = toDuplication;
-                try { old.Dispose(); } catch { }
+                _lastFreshTicks = Stopwatch.GetTimestamp();
             }
-            _lastFreshTicks = Stopwatch.GetTimestamp();
         }
         catch (Exception ex)
         {
+            lock (_swapLock)
+            {
+                if (_disposed) return;
+                if (_active?.CaptureError is Exception activeError)
+                    _bothFailed = new InvalidOperationException("both capture backends failed", new AggregateException(activeError, ex));
+            }
             Console.Error.WriteLine($"[capture] switch failed: {ex.Message}");
-            ICaptureSource active;
-            lock (_swapLock) active = _active;
-            if (active.CaptureError is not null)
-                _bothFailed = new InvalidOperationException(
-                    $"both capture backends failed (active: {active.CaptureError.Message}; alternative: {ex.Message})");
+        }
+        finally
+        {
+            if (fresh is not null) CaptureRetirement.Start(fresh, _readLock);
+            if (retired is not null) CaptureRetirement.Start(retired, _readLock);
         }
     }
 
     public void Dispose()
     {
+        ICaptureSource? active;
+        lock (_swapLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            active = _active;
+            _active = null;
+        }
         _cts.Cancel();
-        _watchdog.Join(1500);
-        lock (_swapLock) _active.Dispose();
+        if (active is not null) CaptureRetirement.Start(active, _readLock);
+        if (_watchdog is not null && !_watchdog.Join(1500))
+            Console.Error.WriteLine("[capture] watchdog is still finishing a native call; late capture will be retired");
         _cts.Dispose();
     }
 }
