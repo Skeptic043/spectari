@@ -17,10 +17,6 @@ internal static unsafe class CoreAudioInterop
     internal static readonly PropertyKey DeviceFriendlyName = new(
         new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
         14);
-    internal static readonly PropertyKey EndpointFormFactor = new(
-        new Guid("1DA5D803-D492-4EDD-8C23-E0C0FFE94C7E"),
-        0);
-
     internal static int CreateDeviceEnumerator(out nint enumerator)
     {
         Guid classId = new("BCDE0395-E52F-467C-8E3D-C4579291692E");

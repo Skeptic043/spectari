@@ -2,25 +2,10 @@ using System.Runtime.InteropServices;
 
 namespace Spectari.Audio;
 
-internal enum AudioEndpointFormFactor : uint
-{
-    RemoteNetworkDevice = 0,
-    Speakers = 1,
-    LineLevel = 2,
-    Headphones = 3,
-    Microphone = 4,
-    Headset = 5,
-    Handset = 6,
-    UnknownDigitalPassthrough = 7,
-    Spdif = 8,
-    DigitalAudioDisplayDevice = 9,
-    Unknown = 10,
-}
-
 internal sealed record AudioInputDeviceDescription(
     string Id,
     string FriendlyName,
-    AudioEndpointFormFactor FormFactor);
+    Guid? ContainerId = null);
 
 internal sealed record AudioInputDeviceDisplayItem(
     AudioInputDeviceDescription Device,
@@ -32,7 +17,6 @@ internal static class AudioInputDevicePolicy
         IEnumerable<AudioInputDeviceDescription> devices)
     {
         List<AudioInputDeviceDescription> ordered = devices
-            .Where(IsCaptureDeviceInput)
             .Where(device => !string.IsNullOrWhiteSpace(device.Id))
             .GroupBy(device => device.Id, StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
@@ -56,12 +40,15 @@ internal static class AudioInputDevicePolicy
         return items;
     }
 
-    private static bool IsCaptureDeviceInput(AudioInputDeviceDescription device) =>
-        device.FormFactor is AudioEndpointFormFactor.LineLevel
-            or AudioEndpointFormFactor.UnknownDigitalPassthrough
-            or AudioEndpointFormFactor.Spdif
-            or AudioEndpointFormFactor.DigitalAudioDisplayDevice
-            or AudioEndpointFormFactor.Unknown;
+    internal static IReadOnlyList<AudioInputDeviceDisplayItem> ForSource(
+        IEnumerable<AudioInputDeviceDescription> devices, SourceKind kind, Guid? containerId)
+    {
+        if (kind != SourceKind.CaptureDevice) return [];
+        var all = PrepareDisplayItems(devices);
+        var matching = containerId is { } id && id != Guid.Empty
+            ? all.Where(item => item.Device.ContainerId == id).Take(1).ToArray() : [];
+        return matching.Length > 0 ? matching : all;
+    }
 
     private static string DisplayBaseName(AudioInputDeviceDescription device) =>
         string.IsNullOrWhiteSpace(device.FriendlyName)
@@ -111,9 +98,7 @@ internal static class AudioInputDeviceEnumerator
                     string friendlyName = ReadStringProperty(
                         device,
                         CoreAudioInterop.DeviceFriendlyName);
-                    AudioEndpointFormFactor formFactor = ReadFormFactor(device);
-                    Console.WriteLine($"[audio-input] enumerated capture endpoint '{friendlyName}' formFactor={formFactor}");
-                    devices.Add(new AudioInputDeviceDescription(id, friendlyName, formFactor));
+                    devices.Add(new AudioInputDeviceDescription(id, friendlyName, ReadContainerId(device)));
                 }
                 finally
                 {
@@ -147,22 +132,18 @@ internal static class AudioInputDeviceEnumerator
         }
     }
 
-    private static AudioEndpointFormFactor ReadFormFactor(nint device)
+    private static Guid? ReadContainerId(nint device)
     {
-        CoreAudioInterop.PropVariant value = ReadProperty(
-            device,
-            CoreAudioInterop.EndpointFormFactor);
+        CoreAudioInterop.PropVariant value = default;
         try
         {
-            const ushort VT_UI4 = 19;
-            return value.VarType == VT_UI4
-                ? (AudioEndpointFormFactor)value.UIntValue
-                : AudioEndpointFormFactor.Unknown;
+            value = ReadProperty(device, Capture.DeviceContainerIdentity.ContainerId);
+            if (value.VarType != 72 || value.PointerValue == 0) return null;
+            Guid id = Marshal.PtrToStructure<Guid>(value.PointerValue);
+            return id == Guid.Empty ? null : id;
         }
-        finally
-        {
-            CoreAudioInterop.ClearPropVariant(ref value);
-        }
+        catch (COMException) { return null; }
+        finally { CoreAudioInterop.ClearPropVariant(ref value); }
     }
 
     private static CoreAudioInterop.PropVariant ReadProperty(

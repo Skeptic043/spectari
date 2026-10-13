@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 
 namespace Spectari.Capture;
 
-internal sealed record CaptureDeviceDescription(string SymbolicLink, string FriendlyName);
+internal sealed record CaptureDeviceDescription(string SymbolicLink, string FriendlyName, Guid? ContainerId = null);
 
 internal sealed record CaptureDeviceDisplayItem(CaptureDeviceDescription Device, string DisplayName);
 
@@ -87,7 +87,7 @@ internal static class CaptureDeviceEnumerator
                     activate,
                     MediaFoundationInterop.MfDevSourceAttributeFriendlyName);
                 if (!string.IsNullOrWhiteSpace(symbolicLink))
-                    devices.Add(new CaptureDeviceDescription(symbolicLink, friendlyName));
+                    devices.Add(new CaptureDeviceDescription(symbolicLink, friendlyName, DeviceContainerIdentity.ForVideoInterface(symbolicLink)));
             }
             return devices;
         }

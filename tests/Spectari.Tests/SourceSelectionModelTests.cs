@@ -7,6 +7,28 @@ namespace Spectari.Tests;
 public sealed class SourceSelectionModelTests
 {
     [Fact]
+    public void SwitchingSourcesFiltersInputsAndDropsUnavailableSelections()
+    {
+        Guid first = Guid.NewGuid(), second = Guid.NewGuid();
+        var model = Model(() => [], () => [],
+            () => [new("video-a", "A", first), new("video-b", "B", second)],
+            () => [new("audio-a", "A", first), new("audio-b", "B", second), new("mic", "Mic")]);
+        model.RefreshAll();
+        Assert.Empty(model.AudioInputDevices);
+        model.SelectKind(SourceKind.CaptureDevice);
+        Assert.Equal("audio-a", Assert.Single(model.AudioInputDevices).Id);
+        model.SelectAudioIndex(2);
+        Assert.Equal("audio-a", model.SelectedAudioInputDeviceId);
+        model.SelectCaptureDeviceIndex(1);
+        Assert.Equal("audio-b", Assert.Single(model.AudioInputDevices).Id);
+        Assert.Null(model.SelectedAudioInputDeviceId);
+        model.SelectAudioIndex(2);
+        model.SelectKind(SourceKind.Monitor);
+        Assert.Empty(model.AudioInputDevices);
+        Assert.Null(model.SelectedAudioInputDeviceId);
+        Assert.Equal(0, model.SelectedAudioIndex);
+    }
+    [Fact]
     public void FollowingWindowIsDistinctFromSelectingTheSameProcessIndependently()
     {
         var model = Model(() => [Window(1, "game", 42)], () => []);
@@ -227,39 +249,19 @@ public sealed class SourceSelectionModelTests
     }
 
     [Fact]
-    public void CaptureAudioInputsAppearBeforeProcessEntriesAndMapByStableId()
+    public void CaptureAudioInputsAppearOnlyOnCaptureSharesAndMapByStableId()
     {
-        var model = Model(
-            () => [Window(1, "game", 11, "Game title")],
-            () => [],
-            () => [],
-            () =>
-            [
-                AudioDevice("card-b", "Bravo Card"),
-                AudioDevice("card-a", "Alpha Card"),
-            ]);
+        var model = Model(() => [Window(1, "game", 11, "Game title")], () => [], () => [],
+            () => [AudioDevice("card-b", "Bravo Card"), AudioDevice("card-a", "Alpha Card")]);
         model.RefreshAll();
-
-        Assert.Equal(
-            [
-                "No audio",
-                "Captured window's audio",
-                "Desktop audio (all sound)",
-                "Capture device audio - Alpha Card",
-                "Capture device audio - Bravo Card",
-                "game - Game title",
-            ],
-            model.AudioDisplayItems);
-
-        model.SelectAudioIndex(4);
-
+        Assert.Equal(["No audio", "Captured window's audio", "Desktop audio (all sound)", "game - Game title"], model.AudioDisplayItems);
+        model.SelectKind(SourceKind.CaptureDevice);
+        Assert.Equal(["No audio (capture device share: pick an app below)", "Desktop audio (all sound)",
+            "Capture device audio - Alpha Card", "Capture device audio - Bravo Card", "game - Game title"], model.AudioDisplayItems);
+        model.SelectAudioIndex(3);
         Assert.Equal("input:card-b", model.AudioKey);
         Assert.Equal("card-b", model.SelectedAudioInputDeviceId);
         Assert.Equal(0u, model.SelectedAudioPid);
-        Assert.Equal(4, model.SelectedAudioIndex);
-
-        model.SelectKind(SourceKind.CaptureDevice);
-
         Assert.Equal(3, model.SelectedAudioIndex);
     }
 
@@ -593,5 +595,5 @@ public sealed class SourceSelectionModelTests
         new(symbolicLink, friendlyName);
 
     private static AudioInputDeviceDescription AudioDevice(string id, string friendlyName) =>
-        new(id, friendlyName, AudioEndpointFormFactor.Unknown);
+        new(id, friendlyName);
 }

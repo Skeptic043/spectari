@@ -442,6 +442,7 @@ public sealed class MainForm : Form
         _captureDeviceCombo.SelectionChangeCommitted += (_, _) =>
         {
             bool changed = _sourceSelection.SelectCaptureDeviceIndex(_captureDeviceCombo.SelectedIndex);
+            RenderAudioPicker(_sourceSelection, _audioCombo);
             RefreshSourceOptions();
             if (changed && _rbCaptureDevice.Checked) ScheduleIdlePreviewRefresh();
         };
@@ -911,6 +912,7 @@ public sealed class MainForm : Form
             _sourceSelection.CaptureDeviceDisplayItems,
             _sourceSelection.SelectedCaptureDeviceIndex);
         RenderMainCaptureDeviceRow();
+        RenderAudioPicker(_sourceSelection, _audioCombo);
     }
 
     private void RefreshCaptureDevicesFromNotification(
@@ -924,6 +926,7 @@ public sealed class MainForm : Form
             _sourceSelection.CaptureDeviceDisplayItems,
             _sourceSelection.SelectedCaptureDeviceIndex);
         RenderMainCaptureDeviceRow();
+        RenderAudioPicker(_sourceSelection, _audioCombo);
     }
 
     private static void RenderSourcePickers(
@@ -1230,7 +1233,10 @@ public sealed class MainForm : Form
         captureDeviceCombo.SelectionChangeCommitted += (_, _) =>
         {
             if (dialogSources.SelectCaptureDeviceIndex(captureDeviceCombo.SelectedIndex))
+            {
+                RenderAudioPicker(dialogSources, audioCombo);
                 RefreshDlgSourceOptions();
+            }
         };
         audioCombo.SelectionChangeCommitted += (_, _) =>
             dialogSources.SelectAudioIndex(audioCombo.SelectedIndex);

@@ -45,6 +45,7 @@ internal sealed class SourceSelectionModel
     private List<CaptureDeviceDescription> _captureDevices = [];
     private List<string> _captureDeviceDisplayItems = [];
     private List<AudioInputDeviceDescription> _audioInputDevices = [];
+    private List<AudioInputDeviceDescription> _availableAudioInputs = [];
     private List<string> _audioInputDeviceDisplayItems = [];
     private IntPtr? _selectedWindowHandle;
     private string? _selectedMonitorDeviceName;
@@ -276,6 +277,7 @@ internal sealed class SourceSelectionModel
                 ? _captureDevices[0].SymbolicLink
                 : null;
         }
+        RefreshAudioChoices();
     }
 
     internal void RefreshAudioInputDevices() =>
@@ -283,8 +285,14 @@ internal sealed class SourceSelectionModel
 
     internal void RefreshAudioInputDevices(IEnumerable<AudioInputDeviceDescription> devices)
     {
+        _availableAudioInputs = AudioInputDevicePolicy.PrepareDisplayItems(devices).Select(item => item.Device).ToList();
+        RefreshAudioChoices();
+    }
+
+    private void RefreshAudioChoices()
+    {
         IReadOnlyList<AudioInputDeviceDisplayItem> items =
-            AudioInputDevicePolicy.PrepareDisplayItems(devices);
+            AudioInputDevicePolicy.ForSource(_availableAudioInputs, Kind, SelectedCaptureDevice?.ContainerId);
         _audioInputDevices = items.Select(item => item.Device).ToList();
         _audioInputDeviceDisplayItems = items.Select(item => item.DisplayName).ToList();
         NormalizeAudioSelection();
@@ -312,7 +320,7 @@ internal sealed class SourceSelectionModel
             _monitors = [.. _enumerateMonitors()],
             _captureDevices = captureDeviceItems.Select(item => item.Device).ToList(),
             _captureDeviceDisplayItems = captureDeviceItems.Select(item => item.DisplayName).ToList(),
-            _audioInputDevices = audioInputDeviceItems.Select(item => item.Device).ToList(),
+            _availableAudioInputs = audioInputDeviceItems.Select(item => item.Device).ToList(),
             _audioInputDeviceDisplayItems = audioInputDeviceItems.Select(item => item.DisplayName).ToList(),
         };
         if (snapshot.SelectedWindowIndex < 0) snapshot._selectedWindowHandle = null;
@@ -322,11 +330,11 @@ internal sealed class SourceSelectionModel
             snapshot._selectedCaptureDeviceSymbolicLink = null;
             if (snapshot.Kind == SourceKind.CaptureDevice) snapshot.Kind = SourceKind.Monitor;
         }
-        snapshot.NormalizeAudioSelection();
+        snapshot.RefreshAudioChoices();
         return snapshot;
     }
 
-    internal void SelectKind(SourceKind kind) => Kind = kind;
+    internal void SelectKind(SourceKind kind) { Kind = kind; RefreshAudioChoices(); }
 
     internal bool SelectWindowIndex(int index)
     {
@@ -359,6 +367,7 @@ internal sealed class SourceSelectionModel
             ? selectedSymbolicLink != _selectedCaptureDeviceSymbolicLink
             : !CaptureDeviceIdentityEquals(selectedSymbolicLink, _selectedCaptureDeviceSymbolicLink);
         _selectedCaptureDeviceSymbolicLink = selectedSymbolicLink;
+        RefreshAudioChoices();
         return changed;
     }
 
@@ -419,6 +428,7 @@ internal sealed class SourceSelectionModel
             : _captureDevices.FindIndex(device =>
                 CaptureDeviceIdentityEquals(device.SymbolicLink, symbolicLink));
         if (index >= 0) _selectedCaptureDeviceSymbolicLink = _captureDevices[index].SymbolicLink;
+        RefreshAudioChoices();
     }
 
     internal void SelectAudioKey(string? key)
@@ -448,8 +458,8 @@ internal sealed class SourceSelectionModel
             return SourceSelectionApplyFailure.CaptureDeviceUnavailable;
         string? audioInputDeviceId = AudioInputDeviceIdFromKey(selection.AudioKey);
         if (audioInputDeviceId is not null &&
-            !_audioInputDevices.Any(candidate =>
-                AudioInputDeviceIdentityEquals(candidate.Id, audioInputDeviceId)))
+            !AudioInputDevicePolicy.ForSource(_availableAudioInputs, selection.Kind, captureDevice?.ContainerId)
+                .Any(candidate => AudioInputDeviceIdentityEquals(candidate.Device.Id, audioInputDeviceId)))
             return SourceSelectionApplyFailure.AudioUnavailable;
         if (audioInputDeviceId is null &&
             selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) &&
@@ -461,6 +471,7 @@ internal sealed class SourceSelectionModel
         if (monitor is not null) _selectedMonitorDeviceName = monitor.DeviceName;
         if (captureDevice is not null) _selectedCaptureDeviceSymbolicLink = captureDevice.SymbolicLink;
         _audioKey = selection.AudioKey;
+        RefreshAudioChoices();
         return SourceSelectionApplyFailure.None;
     }
 
