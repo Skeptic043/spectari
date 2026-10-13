@@ -38,7 +38,8 @@ internal sealed class AudioPipeline : IDisposable
 
         _audioPid = audioPid;
         _captureDesktopAudio = captureDesktopAudio;
-        _audioInputDeviceId = audioInputDeviceId;
+        // Empty input IDs must have the same meaning during validation and startup.
+        _audioInputDeviceId = string.IsNullOrEmpty(audioInputDeviceId) ? null : audioInputDeviceId;
         PipeName = FormatPipeName(port);
         _pipe = new NamedPipeServerStream(PipeName, PipeDirection.Out, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
@@ -59,6 +60,16 @@ internal sealed class AudioPipeline : IDisposable
             : new AudioPipeline(audioPid, captureDesktopAudio, audioInputDeviceId, port);
 
     internal static string FormatPipeName(int port) => $"spectari_audio_{port}";
+
+    internal IDisposable CreateCapture(
+        Func<IDisposable> createDesktop,
+        Func<string, IDisposable> createInput,
+        Func<uint, IDisposable> createProcess) =>
+        _captureDesktopAudio
+            ? createDesktop()
+            : _audioInputDeviceId is not null
+                ? createInput(_audioInputDeviceId)
+                : createProcess(_audioPid);
 
     internal void Start(Task<long> videoEpoch, CancellationToken ct)
     {
@@ -95,14 +106,10 @@ internal sealed class AudioPipeline : IDisposable
             {
                 // Cancellation inside the gate prevents creation after disposal.
                 if (ct.IsCancellationRequested) return;
-                _audioCapture = _captureDesktopAudio
-                    ? new DesktopAudioCapture(videoEpochTicks, WriteToPipe)
-                    : _audioInputDeviceId is not null
-                        ? new CaptureDeviceAudioCapture(
-                            _audioInputDeviceId,
-                            videoEpochTicks,
-                            WriteToPipe)
-                        : new ProcessAudioCapture(_audioPid, videoEpochTicks, WriteToPipe);
+                _audioCapture = CreateCapture(
+                    () => new DesktopAudioCapture(videoEpochTicks, WriteToPipe),
+                    id => new CaptureDeviceAudioCapture(id, videoEpochTicks, WriteToPipe),
+                    pid => new ProcessAudioCapture(pid, videoEpochTicks, WriteToPipe));
             }
             if (_captureDesktopAudio)
                 Console.WriteLine("[audio] desktop audio follows the default output device");
