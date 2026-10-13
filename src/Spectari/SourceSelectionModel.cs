@@ -200,6 +200,15 @@ internal sealed class SourceSelectionModel
         _ => _windows.FirstOrDefault(window => AudioIdentityEquals(window.ProcessName, _audioKey))?.Pid ?? 0,
     };
 
+    internal AudioSelectionMode SelectedAudioMode => _audioKey switch
+    {
+        NoAudioKey => AudioSelectionMode.None,
+        DesktopAudioKey => AudioSelectionMode.Desktop,
+        CapturedWindowAudioKey when Kind == SourceKind.Window => AudioSelectionMode.FollowWindow,
+        _ when IsAudioInputDeviceKey(_audioKey) => AudioSelectionMode.Input,
+        _ => AudioSelectionMode.Process,
+    };
+
     internal bool IsDesktopAudioSelected => _audioKey == DesktopAudioKey;
 
     internal string? SelectedAudioInputDeviceId

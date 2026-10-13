@@ -10,7 +10,7 @@ namespace Spectari.Capture;
 /// Keeps one window-share canvas alive while its application is absent, then
 /// replaces the WGC source with a newly appeared window from that application.
 /// </summary>
-internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostics
+internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostics, Audio.IWindowAudioTarget
 {
     private const int CandidatePollMs = 500;
 
@@ -101,6 +101,9 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
     public string AdapterName => _adapterName;
     public string AdapterLuid => _adapterLuid;
     public string DriverVersion => _driverVersion;
+
+    public uint AudioProcessId { get { lock (_gate) return _activeIdentity.Pid; } }
+    public event Action<uint>? ProcessAttached;
 
     internal bool WaitingForWindow
     {
@@ -381,7 +384,10 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
             if (attachedCapture.TargetWasClosed)
                 OnTargetClosed(attachedCapture);
             else
+            {
+                ProcessAttached?.Invoke(candidate.Pid);
                 Console.WriteLine("[window-reattach] capture attached to the returned application window.");
+            }
             _stateChanged.Set();
         }
         catch (Exception ex)

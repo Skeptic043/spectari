@@ -7,6 +7,22 @@ namespace Spectari.Tests;
 public sealed class SourceSelectionModelTests
 {
     [Fact]
+    public void FollowingWindowIsDistinctFromSelectingTheSameProcessIndependently()
+    {
+        var model = Model(() => [Window(1, "game", 42)], () => []);
+        model.RefreshAll();
+        model.SelectAudioKey(SourceSelectionModel.CapturedWindowAudioKey);
+        Assert.Equal(AudioSelectionMode.FollowWindow, model.SelectedAudioMode);
+        uint pid = model.SelectedAudioPid;
+        model.SelectAudioKey("game");
+        Assert.Equal(pid, model.SelectedAudioPid);
+        Assert.Equal(AudioSelectionMode.Process, model.SelectedAudioMode);
+        model.SelectAudioKey(SourceSelectionModel.DesktopAudioKey);
+        Assert.Equal(AudioSelectionMode.Desktop, model.SelectedAudioMode);
+        model.SelectAudioKey(SourceSelectionModel.NoAudioKey);
+        Assert.Equal(AudioSelectionMode.None, model.SelectedAudioMode);
+    }
+    [Fact]
     public void RefreshPreservesWindowAndMonitorStableIdentities()
     {
         List<WindowDescription> windows =

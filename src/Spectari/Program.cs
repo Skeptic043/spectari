@@ -314,6 +314,9 @@ internal static class Program
             SourceName = sourceName,
             StreamName = opts.Name,
             AudioPid = audioPid,
+            AudioMode = audioPid == 0 ? Audio.AudioSelectionMode.None
+                : string.IsNullOrEmpty(opts.Audio) && windowHandle != IntPtr.Zero
+                    ? Audio.AudioSelectionMode.FollowWindow : Audio.AudioSelectionMode.Process,
             Fps = opts.Fps,
             BitrateKbps = opts.BitrateKbps,
             Port = opts.Port,

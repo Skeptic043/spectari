@@ -1039,6 +1039,7 @@ public sealed class MainForm : Form
             SourceName = sourceName,
             StreamName = _nameInput.Text.Trim(),
             AudioPid = audioPid,
+            AudioMode = _sourceSelection.SelectedAudioMode,
             CaptureDesktopAudio = _sourceSelection.IsDesktopAudioSelected,
             AudioInputDeviceId = _sourceSelection.SelectedAudioInputDeviceId ?? "",
             Fps = preset.Fps,

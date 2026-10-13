@@ -7,6 +7,7 @@ namespace Spectari.Audio;
 internal sealed class AudioPipeline : IDisposable
 {
     private readonly uint _audioPid;
+    private IWindowAudioTarget? _windowTarget;
     private readonly bool _captureDesktopAudio;
     private readonly string? _audioInputDeviceId;
     private readonly NamedPipeServerStream _pipe;
@@ -59,6 +60,14 @@ internal sealed class AudioPipeline : IDisposable
             ? null
             : new AudioPipeline(audioPid, captureDesktopAudio, audioInputDeviceId, port);
 
+    internal static AudioPipeline? Create(SessionConfig config, Capture.ICaptureSource capture)
+    {
+        AudioPipeline? pipeline = Create(config.AudioPid, config.CaptureDesktopAudio, config.AudioInputDeviceId, config.Port);
+        if (pipeline is not null && config.AudioMode == AudioSelectionMode.FollowWindow)
+            pipeline._windowTarget = capture as IWindowAudioTarget;
+        return pipeline;
+    }
+
     internal static string FormatPipeName(int port) => $"spectari_audio_{port}";
 
     internal IDisposable CreateCapture(
@@ -109,7 +118,9 @@ internal sealed class AudioPipeline : IDisposable
                 _audioCapture = CreateCapture(
                     () => new DesktopAudioCapture(videoEpochTicks, WriteToPipe),
                     id => new CaptureDeviceAudioCapture(id, videoEpochTicks, WriteToPipe),
-                    pid => new ProcessAudioCapture(pid, videoEpochTicks, WriteToPipe));
+                    pid => _windowTarget is null
+                        ? new ProcessAudioCapture(pid, videoEpochTicks, WriteToPipe)
+                        : new ProcessAudioRebinder(_windowTarget, videoEpochTicks, WriteToPipe));
             }
             if (_captureDesktopAudio)
                 Console.WriteLine("[audio] desktop audio follows the default output device");
