@@ -46,6 +46,13 @@ public sealed class WebServerAccessTests
                 if (allowed) Assert.Equal(key, body.RootElement.GetProperty("key").GetString());
                 else Assert.False(body.RootElement.TryGetProperty("key", out _));
             }
+            foreach (string query in new[] { "", "?k=synthetic-old", "?k=synthetic-current" })
+            {
+                using var root = await http.GetAsync("/" + query);
+                using var shell = await http.GetAsync("/index.html" + query);
+                Assert.Equal(HttpStatusCode.OK, root.StatusCode);
+                Assert.Equal(await shell.Content.ReadAsStringAsync(), await root.Content.ReadAsStringAsync());
+            }
             using var missing = await http.GetAsync("/api/viewer-key");
             Assert.Equal(HttpStatusCode.Forbidden, missing.StatusCode);
             using var options = await http.SendAsync(new HttpRequestMessage(HttpMethod.Options, "/api/viewer-key"));

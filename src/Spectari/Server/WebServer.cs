@@ -6,8 +6,8 @@ namespace Spectari.Server;
 /// <summary>
 /// Minimal HttpListener server: serves the viewer page from wwwroot and upgrades
 /// /ws to a WebSocket handled by the Broadcaster. No ASP.NET dependency.
-/// The viewer page and the WebSocket require the per-session key (?k=) when one
-/// is set; /api/stats and static assets stay open so the grid can probe.
+/// Media requires the per-session key when enabled. Viewer shells and status
+/// stay key-free so players can recover through the separate bootstrap route.
 /// A null broadcaster runs the server in idle mode: pages are served ungated
 /// (they reveal nothing), /api/stats reports state "idle", and /ws refuses -
 /// this is the holding page shown while the app is open but not streaming, so
@@ -211,16 +211,7 @@ public sealed class WebServer : IDisposable
                 return;
             }
 
-            if (path == "/")
-            {
-                if (!keyOk)
-                {
-                    await WriteResponseAsync(context, 403, "text/plain; charset=utf-8",
-                        "This stream needs its viewer key. Ask the streamer for the current link (it ends in ?k=...).");
-                    return;
-                }
-                path = "/index.html";
-            }
+            if (path == "/") path = "/index.html";
             if (path == "/grid") path = "/grid.html";
             string file = Path.GetFullPath(Path.Combine(_wwwroot, path.TrimStart('/')));
             // Trailing separator so a sibling like "wwwroot-x" can't pass the prefix check.

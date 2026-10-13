@@ -15,8 +15,9 @@ MSE, with no WebRTC, signaling server, Spectari account, or cloud relay.
   automatic fallback to CPU encoding if the GPU encoder fails or stalls.
   Presets run from 720p30 to 1440p60 plus Native, with a separate bitrate
   picker that shows the Mbps so you see the upload cost before you start.
-- Each stream gets a random viewer key baked into the link, so a bare or
-  guessed link does not work.
+- Each stream gets a random viewer key in its link. Eligible Tailscale and
+  local viewers recover rotated keys automatically. LAN-only viewers need
+  the current link.
 - A grid tiles several streams in one browser tab, and the built-in Watch
   window shows the same grid without a browser. It finds live Spectari
   machines on your Tailscale network on its own.
@@ -120,7 +121,9 @@ The model in plain terms:
   explicitly selected. Status metadata is public to reachable callers and never
   includes a key. The player and native discovery use a separate recovery
   endpoint for trusted Tailscale and local callers. LAN-only viewers need a
-  fresh link after a restart.
+  fresh link after a restart. A newly opened stale link can load the player
+  and recover for eligible Tailscale/local callers, just like an open tab.
+  Loading the player alone does not grant access to the stream.
 - **Browser access.** The recovery endpoint does not permit cross-origin key
   reads. Player connections check the browser origin as well as the viewer key.
   Grids can still read status and embed players from other hosts. These checks
