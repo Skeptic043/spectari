@@ -199,6 +199,13 @@ Needs the .NET 10 SDK. From the repo root:
 
     dotnet run --project src/Spectari
 
+## AI Use
+
+AI was used to write all of the code in this project. The original concept,
+design direction, testing, debugging, and release decisions are my own. If
+you prefer not to use software developed with AI assistance, I understand
+and respect that choice.
+
 ## Support
 
 Spectari is a hobby project. If it's useful and you feel like saying thanks:
