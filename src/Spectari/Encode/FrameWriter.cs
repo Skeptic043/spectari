@@ -14,12 +14,10 @@ internal readonly record struct FrameWriterProgress(
     bool Failed);
 
 /// <summary>
-/// Decouples the sampling grid from ffmpeg's stdin pipe: the sampler rents a
-/// buffer, fills it, enqueues it; a dedicated thread does the blocking pipe
-/// writes. Transient pipe stalls no longer skew sample timing. Sustained
-/// encoder overload surfaces as back-pressure on RentBuffer (all buffers busy).
+/// The fixed buffer pool bounds pending rawvideo memory. Pipe writes belong
+/// to a separate thread so the sampler can supervise back-pressure.
 /// </summary>
-public sealed class FrameWriter : IDisposable
+public sealed class FrameWriter : IDisposable, IRawFrameWriter
 {
     private readonly BlockingCollection<byte[]> _free = new();
     private readonly BlockingCollection<byte[]> _pending = new(boundedCapacity: 3);
@@ -44,14 +42,15 @@ public sealed class FrameWriter : IDisposable
         _thread.Start();
     }
 
-    /// <summary>Blocks when the encoder is behind - that back-pressure is intentional.</summary>
-    public byte[] RentBuffer(CancellationToken ct) => _free.Take(ct);
+    public byte[]? TryRentBuffer(int timeoutMs, CancellationToken ct) =>
+        _free.TryTake(out var buffer, timeoutMs, ct) ? buffer : null;
 
-    public void Enqueue(byte[] buffer)
+    public bool TryEnqueue(byte[] buffer, int timeoutMs, CancellationToken ct)
     {
-        _pending.Add(buffer);
+        if (!_pending.TryAdd(buffer, timeoutMs, ct)) return false;
         Interlocked.Increment(ref _framesEnqueued);
         Interlocked.Exchange(ref _lastEnqueueTicks, Stopwatch.GetTimestamp());
+        return true;
     }
 
     public void ReturnUnused(byte[] buffer) => _free.Add(buffer);

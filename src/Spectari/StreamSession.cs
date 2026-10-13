@@ -507,12 +507,8 @@ public sealed class StreamSession
         using var timer = new HighResTimer();
         if (!timer.IsHighResolution)
             Console.WriteLine("[pacing] WARNING: high-resolution timer unavailable, falling back to Sleep()");
-        long ticksPerFrame = Stopwatch.Frequency / fps;
-        int graceMs = Math.Max(1000 / fps * 2 / 5, 2);
-        long next = Stopwatch.GetTimestamp() + ticksPerFrame;
-        long lastVersion = 0;
-        bool videoEpochProduced = false;
-        long freshCount = 0, dupCount = 0, pacingSlips = 0, lastCompositorFrames = 0;
+        var pacer = new RawVideoPacer(capture, writer, fps, stage => _pacingStage = stage);
+        long freshCount = 0, dupCount = 0, lastCompositorFrames = 0;
         long lastReport = Stopwatch.GetTimestamp();
         long reportInterval = Stopwatch.Frequency * 2;
 
@@ -523,7 +519,7 @@ public sealed class StreamSession
                 WaitingForWindow: true,
             };
             _pacingStage = "waiting-for-sample-time";
-            timer.WaitUntil(next);
+            timer.WaitUntil(pacer.NextTicks);
 
             _pacingStage = "supervising-pipeline";
             if (ffmpeg.HasExited || writer.Failed)
@@ -548,43 +544,17 @@ public sealed class StreamSession
                 return "web server failed; see log";
             }
 
-            _pacingStage = "waiting-for-capture";
-            bool fresh = capture.WaitForFreshFrame(lastVersion, graceMs);
-            lastVersion = capture.FrameVersion;
-
-            byte[] buffer;
-            _pacingStage = "waiting-for-frame-buffer";
-            try { buffer = writer.RentBuffer(ct); }
-            catch (OperationCanceledException) { break; }
-
-            _pacingStage = "gpu-readback";
-            bool frameReady = capture.TryReadFrame(buffer);
-            // A stalled native readback can return after external salvage released
-            // the downstream pipeline. Cancellation fences that late result off.
-            if (ct.IsCancellationRequested) break;
-            if (frameReady)
+            RawVideoPacingResult sample = pacer.Sample(ct);
+            if (sample == RawVideoPacingResult.Cancelled) break;
+            if (sample == RawVideoPacingResult.Overloaded)
             {
-                // Produce the A/V epoch at the first enqueue toward ffmpeg. The
-                // audio continuation cannot construct capture until this succeeds.
-                long enqueueTicks = videoEpochProduced ? 0 : Stopwatch.GetTimestamp();
-                _pacingStage = "frame-enqueue";
-                writer.Enqueue(buffer);
-                if (!videoEpochProduced)
-                {
-                    _videoEpoch.TrySetResult(enqueueTicks);
-                    videoEpochProduced = true;
-                }
-                if (fresh) freshCount++; else dupCount++;
+                Console.Error.WriteLine($"[pacing] {RawVideoPacer.OverloadReason}");
+                return RawVideoPacer.OverloadReason;
             }
-            else
-            {
-                writer.ReturnUnused(buffer);
-            }
-            _pacingStage = "sample-complete";
-
-            next += ticksPerFrame;
+            if (pacer.EpochTicks is { } epoch) _videoEpoch.TrySetResult(epoch);
+            if (sample == RawVideoPacingResult.Fresh) freshCount++;
+            if (sample == RawVideoPacingResult.Duplicate) dupCount++;
             long now = Stopwatch.GetTimestamp();
-            if (now > next + 5 * ticksPerFrame) { next = now + ticksPerFrame; pacingSlips++; }
 
             if (now - lastReport > reportInterval)
             {
