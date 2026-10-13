@@ -1,40 +1,57 @@
 # Spectari
 
-Spectari streams a monitor or a single window from a Windows PC over
-Tailscale or LAN to a modern browser or the built-in Watch window. It was
-built for private streaming in a small group. The idea is you run one exe, the people you
-choose open a link, and you're done. Transport is WebSocket and playback is
-MSE, with no WebRTC, signaling server, Spectari account, or cloud relay.
+Spectari streams a monitor, a single window, or a capture device from a
+Windows PC over Tailscale or LAN to a browser or the built-in Watch window.
+It was built for private streaming in a small group. The idea is you run
+one exe, the people you choose open a link, and you're done. Transport is
+WebSocket and playback is MSE, with no WebRTC, signaling server, Spectari
+account, or Spectari relay service.
 
 ## What it does
 
-- Streams a whole monitor, single window, or capture device (webcam/capture card). Monitor capture
-  uses desktop duplication for full-rate capture and includes the cursor.
-- Streams audio from one application you pick, all desktop audio, or nothing. Mixing several specific apps is not supported.
+- Streams a whole monitor, single window, or capture device (webcam/capture
+  card). Monitor capture uses desktop duplication by default and includes
+  the cursor.
+- Streams audio from one application you pick, all desktop audio, a capture
+  device's audio input, or nothing. Mixing several specific apps is not
+  supported. Capture-device shares offer the card's matching audio input
+  when available, otherwise they offer the active inputs for you to choose.
 - Hardware encoding on NVIDIA (NVENC), AMD (AMF), and Intel (QSV), with
   automatic fallback to CPU encoding if the GPU encoder fails or stalls.
   Presets run from 720p30 to 1440p60 plus Native, with a separate bitrate
   picker that shows the Mbps so you see the upload cost before you start.
-- Each stream gets a random viewer key in its link. Eligible Tailscale and
-  local viewers recover rotated keys automatically. LAN-only viewers need
-  the current link.
+- Each stream gets a random viewer key in its link. Eligible Tailscale
+  viewers and browsers on the host itself recover rotated keys
+  automatically. LAN-only viewers need the current link.
 - A grid tiles several streams in one browser tab, and the built-in Watch
-  window shows the same grid without a browser. It finds live Spectari
-  machines on your Tailscale network on its own.
+  window shows the same grid without a browser. Find streams looks for live
+  Spectari hosts among the Tailscale peers visible to your PC. You can also
+  add a stream by its copied link.
 - While the app is open but not streaming, the link serves a holding page
   that connects on its own when you start. The Watch window plays one soft
-  chime when a stream you are not already watching goes live; the bell in the
+  chime when a stream you are not already watching goes live. The bell in the
   grid header turns that off.
 
 ## Requirements
 
-- Hosting: Windows 10/11, x64. Download the zip, extract, and run Spectari.exe.
-- Watching: any modern browser on any OS or mobile platform.
+- Hosting: Windows 10/11, x64. Per-application audio requires
+  [Windows build 20348 or later](https://learn.microsoft.com/en-us/samples/microsoft/windows-classic-samples/applicationloopbackaudio-sample/).
+  On older Windows 10 builds, use desktop audio instead.
+- The built-in Watch window needs the
+  [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
+  If it is missing, install it or open stream links in a browser.
+- Browser playback requires Media Source Extensions and H.264/AAC support.
+  Compatibility depends on the browser and device.
 
 ## Quick start
 
 For LAN or a local test you can start right away. To let people watch over
 the internet, set up Tailscale first (see the next section).
+
+Download the Spectari application ZIP from [Releases](https://github.com/Skeptic043/spectari/releases),
+extract it, and run Spectari.exe. Choose the application ZIP rather than
+GitHub's source-code archives. The application package includes FFmpeg and
+does not require a separate .NET installation.
 
 1. Run Spectari.exe, pick what to share and a quality preset, click Start
    streaming.
@@ -45,14 +62,16 @@ the internet, set up Tailscale first (see the next section).
    "Allow LAN viewers" before clicking it.
 
 Each stream start generates a new viewer key, so the link changes when you
-restart a stream. Viewers on your tailnet pick up the new key automatically
-if they keep their tab or grid open; anyone else needs the fresh link.
+restart a stream. Eligible Tailscale viewers can recover the current key in
+an open tab or by reopening an old link. LAN-only viewers need the fresh link.
 
 ## Watching over the internet: Tailscale
 
 Spectari reaches remote viewers over [Tailscale](https://tailscale.com), a
-free mesh VPN that connects your PCs directly and encrypted, with no port
-forwarding and no relay server.
+mesh VPN with a free personal plan. Connections are encrypted and do not
+require port forwarding. Tailscale prefers a direct connection but can fall
+back to an encrypted relay, which can affect throughput and latency. See
+[Tailscale connection types](https://tailscale.com/docs/reference/connection-types).
 
 One-time setup on the hosting PC:
 
@@ -74,8 +93,9 @@ labels machine sharing as beta).
 2. In the Tailscale admin console, find the hosting PC under Machines, pick
    Share, and send them the invite privately.
 3. They accept, and your PC appears in their Tailscale as a shared machine.
-4. Send them the stream link. If they run Spectari, the Watch window finds a
-   discoverable host on its own.
+4. Send them the stream link. They can open it in a browser or paste it into
+   Watch. Automatic discovery and key recovery for shared-in hosts have not
+   yet been verified.
 
 Sharing is one-way: they can reach your PC, not the reverse. Remove them from
 the same menu to stop.
@@ -83,21 +103,19 @@ the same menu to stop.
 ### People who also stream: invite them to your network
 
 Invite them into your Tailscale network instead (admin console, Users,
-Invite). The free plan covers a small number of users. Everyone on the
-network finds each other's streams with Find streams in the Watch window and
-picks up rotated keys automatically. Someone already using Tailscale
-elsewhere can add this network as a second account from the tray app and
-switch between them.
+Invite). The free plan covers a small number of users. Find streams in the
+Watch window looks for reachable Spectari hosts among visible peers, and
+eligible viewers pick up rotated keys automatically. Someone already using
+Tailscale elsewhere can add this network as a second account from the tray
+app and switch between them.
 
 ### Other networks (advanced)
 
-Under the hood Spectari just serves the stream on an IP and port, so Tailscale
-is not the only way to reach it. Anyone comfortable with their own networking
-can point viewers at any reachable IP and port. A self-hosted VPN such as
-WireGuard behaves just like Tailscale: turn on "Allow LAN viewers" and send the
-full link. Port forwarding works too, but it puts the stream on the public
-internet behind only the per-stream key. I recommend you do NOT do it unless you
-understand the risks. Advanced setups beyond Tailscale and LAN are unsupported.
+Spectari serves the stream on an IP and port, but an address must belong to
+the host or use a recognized host name. Custom hostname aliases, reverse
+proxies, and public port-forwarded addresses are not generally supported.
+Advanced setups beyond Tailscale and LAN are unsupported. Keep the stream
+on a private network rather than exposing it directly to the internet.
 
 ## Watching several streams at once
 
@@ -113,16 +131,21 @@ Two ways:
 
 The model in plain terms:
 
-- **What can reach the host.** Out of the box the stream port accepts only
-  Tailscale addresses, and nothing is reachable from the public internet. LAN
-  access is an explicit opt-in: tick "Allow LAN viewers" and click Open port.
+- **What can reach the host.** Open port configures Windows Firewall for
+  Tailscale addresses by default. LAN access is an explicit opt-in: tick
+  "Allow LAN viewers" and click Open port. Existing firewall and network
+  configuration still determine what can reach your PC.
+- **Encryption.** Tailscale encrypts traffic between devices, including
+  relayed connections. Ordinary LAN streaming uses HTTP and WebSocket
+  without encryption supplied by Spectari. Use it on a network you trust.
 - **What the viewer key does.** Each stream start generates a random key in
   the link. Media connections require the current key unless keyless mode is
   explicitly selected. Status metadata is public to reachable callers and never
   includes a key. The player and native discovery use a separate recovery
-  endpoint for trusted Tailscale and local callers. LAN-only viewers need a
-  fresh link after a restart. A newly opened stale link can load the player
-  and recover for eligible Tailscale/local callers, just like an open tab.
+  endpoint for eligible Tailscale callers and callers on the host itself.
+  LAN-only viewers need a fresh link after a restart. A newly opened stale
+  link can load the player and recover for those callers, just like an open
+  tab.
   Loading the player alone does not grant access to the stream.
 - **Browser access.** The recovery endpoint does not permit cross-origin key
   reads. Player connections check the browser origin as well as the viewer key.
@@ -132,15 +155,18 @@ The model in plain terms:
   machine names are supported. Unrecognized custom aliases and reverse-proxy
   hostnames are refused. After upgrading the host, reload older browser pages
   and update older Watch installations to restore automatic key recovery.
-- **Devices with network access.** Tailscale and local callers retain automatic
-  key recovery. A LAN-only caller must supply the current link. The viewing key
-  supplements the network boundary and does not replace it.
+- **Devices with network access.** Eligible Tailscale callers and callers on
+  the host itself retain automatic key recovery. A LAN-only caller must
+  supply the current link. The viewing key supplements the network boundary
+  and does not replace it.
 - **Tailscale is recognized by address range.** Spectari treats 100.64.0.0/10
   as Tailscale. Another VPN or a carrier-grade NAT that puts addresses from
   that range on your machine would get the same trust, so keep that in mind if
   you run one.
-- **What the logs contain.** Technical diagnostics, with personal information
-  removed.
+- **What the logs contain.** Technical diagnostics with built-in scrubbing
+  for known keys and private values. Review copied logs and remove any
+  remaining viewer links, addresses, names, or other private information
+  before posting them publicly.
 
 ## Common issues
 
@@ -151,51 +177,62 @@ The model in plain terms:
   viewers, click Open port again on the new port with "Allow LAN viewers"
   ticked.
 - **The page says the stream needs its viewer key.** The stream restarted and
-  a LAN-only viewer's link went stale. Send a fresh link, or have them use
-  Find streams in the Watch window. Tailnet viewers heal this on their own.
+  a LAN-only viewer's link went stale. Send a fresh link. Eligible Tailscale
+  viewers can recover it automatically. After a host upgrade, reload older
+  browser pages and update Watch if recovery stops working.
 - **A fullscreen game shows a frozen frame.** Share the whole monitor instead
-  of the window, or set the game to borderless. A few exclusive-fullscreen
-  setups cannot be captured by anything; Amnesia: The Bunker is one known
-  example. If you hit an app that won't capture, open an issue so it can be
-  noted.
+  of the window, or set the game to borderless. Capture behavior varies by
+  game and display mode. If neither works, report the game, display mode,
+  and capture source you tried.
 - **Smooth on one browser, choppy on another.** Check that the browser's
   hardware acceleration is on. Add `&stats=1` to the link or click the LIVE
   badge for a diagnostics overlay.
 - **A 60 fps window share shows lower source fps.** Windows window capture can
-  deliver fewer fresh frames. Share the whole monitor for the full-rate path.
-- **Anything else.** Use Copy log and open a GitHub issue with it.
+  deliver fewer fresh frames than the selected output rate. Try sharing the
+  monitor or lowering the frame rate or resolution. A 60 fps setting does
+  not guarantee 60 distinct captured frames each second.
+- **The stream stops with "video timing overload."** The pipeline could not
+  recover its timing. Lower the frame rate or resolution and try again.
+- **Anything else.** Use Copy log, review and redact it, then
+  [report an issue](https://github.com/Skeptic043/spectari/issues) with the
+  relevant excerpt and steps to reproduce the problem. Never post a viewer
+  link or key.
 
 ## FAQ
 
 **Is it free?** Yes, for noncommercial use. See the license below.
 
-**Does it capture my microphone?** Not directly. Audio comes from the one app
-you pick, or from all desktop audio. Your mic is only in the
-stream if you route it into that output yourself, for example mic monitoring
-through your speakers.
+**Does it capture my microphone?** Window and monitor shares do not offer a
+microphone input. Your mic can still be audible if you route it through the
+selected application or desktop output. Capture-device shares normally offer
+the card's matching audio input. When no match is found, the fallback list
+contains active audio inputs and can include microphones, so check what you
+select.
 
 **The stream audio is quiet or silent even though the app is playing.** Check
-that app's volume in the Windows volume mixer. Capture taps the app's sound
-after Windows applies its per-app volume, so turning it down there quiets the
-stream too. Use the app's own volume slider instead if you want it quiet
-locally but audible to viewers.
+the selected audio source, the app's own volume, and its volume in the
+Windows volume mixer. Muting or lowering the source can also affect what
+viewers hear.
 
-**How many people can watch?** Up to a hard cap of 24 at once, but bandwidth is
-typically the real limit first. Each viewer gets a full copy of the stream,
-so your upload divided by the bitrate is the practical cap. A 12 Mbps 1080p60 stream to
-four viewers needs roughly 48 Mbps upload. Upload is usually a fraction of
-download, so a typical cable connection handles around 3 to 5 viewers,
-symmetric fiber 10 or more, and lower bitrates stretch further.
+**How many people can watch?** The default limit is 24 viewers. The CLI can
+change it with `--max-viewers`, where `0` means unlimited. Upload bandwidth
+usually limits the useful number first because each viewer gets a full copy
+of the stream. A 12 Mbps stream to four viewers needs roughly 48 Mbps of
+upload capacity, plus network overhead. Leave some headroom and lower the
+bitrate if your connection cannot keep up.
 
-**What's the latency?** Roughly half a second to a second, tuned for
-smoothness over speed.
+**What's the latency?** Playback is buffered for smoothness rather than the
+lowest possible delay. Latency varies with the host, browser, network, and
+current load.
 
 **Can I run it from the command line?** Yes. Any argument switches to console
 mode: `Spectari.exe --monitor 0 --encoder libx264 --port 8093`.
 
 ## Build from source
 
-Needs the .NET 10 SDK. From the repo root:
+Needs the .NET 10 SDK and FFmpeg with H.264 encoding, AAC encoding, and MP4
+muxing support. Put FFmpeg on `PATH` or place `ffmpeg.exe` next to the built
+Spectari executable. From the repo root:
 
     dotnet run --project src/Spectari
 
@@ -214,8 +251,8 @@ Spectari is a hobby project. If it's useful and you feel like saying thanks:
 ## License
 
 Spectari is free for personal and other noncommercial use under
-[PolyForm Noncommercial 1.0.0](LICENSE). Commercial use is not included;
-contact the maintainer through GitHub about commercial licensing.
+[PolyForm Noncommercial 1.0.0](LICENSE). Commercial use is not included.
+Contact the maintainer through GitHub about commercial licensing.
 
 Release packages also include an unmodified FFmpeg executable as separate
 software under GPLv3 or later. The exact source, license, binary hash, and
