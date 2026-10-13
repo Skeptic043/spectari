@@ -177,7 +177,7 @@ function setStatus(live, text) {
 
 // The viewer key travels in ?k=. A stream restart rotates it, so a tab opened
 // before the stream (or left over from a previous one) can hold a stale key;
-// trusted callers (tailnet + loopback) get the current key from /api/stats and
+// trusted callers (tailnet + loopback) get the current key from /api/viewer-key and
 // adopt it here, so the holding page connects itself once a stream goes live.
 let viewKey = new URLSearchParams(location.search).get("k") || "";
 
@@ -214,19 +214,27 @@ function connect() {
     pump();
   };
 
-  ws.onclose = () => {
-    // Distinguish "host is up but not streaming yet" from a real drop, so a tab
-    // opened before the stream starts (or holding a link between streams) shows
-    // an honest message and connects itself the moment a stream goes live.
-    fetch("/api/stats", { signal: AbortSignal.timeout(2500) })
-      .then(r => r.json())
-      .then(s => {
-        if (s.key) viewKey = s.key; // trusted caller: adopt the current key
-        const idle = s.state === "idle";
-        setStatus(false, idle ? "not streaming yet" : "reconnectingâ€¦");
-      })
-      .catch(() => setStatus(false, "reconnectingâ€¦"));
-    setTimeout(connect, retryMs);
+  ws.onclose = async () => {
+    const closedSocket = ws;
+    try {
+      const response = await fetch("/api/viewer-key", {
+        mode: "same-origin", cache: "no-store",
+        headers: { "X-Spectari-Bootstrap": "1" }, signal: AbortSignal.timeout(2500)
+      });
+      if (closedSocket !== ws) return;
+      if (response.ok) {
+        const bootstrap = await response.json();
+        if (closedSocket !== ws) return;
+        if (bootstrap.key) viewKey = bootstrap.key;
+        setStatus(false, bootstrap.state === "idle" ? "not streaming yet" : "reconnecting…");
+      } else {
+        setStatus(false, "This stream needs its current viewer link");
+      }
+    } catch (_) {
+      if (closedSocket === ws) setStatus(false, "reconnecting…");
+    }
+    if (closedSocket !== ws) return;
+    setTimeout(() => { if (closedSocket === ws) connect(); }, retryMs);
     retryMs = Math.min(retryMs * 2, 5000);
   };
 }

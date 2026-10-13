@@ -177,6 +177,12 @@ function updateGridVisibility() {
   grid.style.display = hasTiles ? "grid" : "none";
 }
 
+function playerUrl(url) {
+  const player = new URL(url);
+  player.pathname = "/index.html";
+  return player.href;
+}
+
 function createTile(url) {
   const tile = document.createElement("div");
   tile.className = "tile";
@@ -201,7 +207,7 @@ function createTile(url) {
   const open = document.createElement("a");
   open.className = "open";
   open.textContent = "open ↗";
-  open.href = url;
+  open.href = playerUrl(url);
   open.target = "_blank";
   open.rel = "noopener noreferrer";
   bar.appendChild(open);
@@ -283,9 +289,9 @@ window.addStream = function (u) {
     });
     if (tile) {
       tile.dataset.url = n;
-      tile.querySelector("a.open").href = n;
+      tile.querySelector("a.open").href = playerUrl(n);
       const frame = tile.querySelector("iframe");
-      if (frame && frame.getAttribute("src") !== n) frame.src = n;
+      if (frame && frame.getAttribute("src") !== playerUrl(n)) frame.src = playerUrl(n);
       tile.dataset.down = 0;
       pollTile(tile);
     } else {
@@ -318,7 +324,7 @@ function embed(tile) {
   frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
   frame.allow = "autoplay; fullscreen";
   frame.allowFullscreen = true;
-  frame.src = tile.dataset.url;
+  frame.src = playerUrl(tile.dataset.url);
   tile.appendChild(frame);
 }
 
@@ -349,13 +355,6 @@ function pollTile(tile) {
         ? `${s.sourceFps} fps · ${s.viewers} watching`
         : s.state === "idle" ? "not streaming yet"
         : (s.state || "not streaming");
-      // Hosts hand the current viewer key to tailnet/local callers; a restart
-      // rotates it, so refresh the saved link when it changes. addStream updates
-      // only this tile and immediately polls its new URL.
-      if (s.key && new URL(url).searchParams.get("k") !== s.key) {
-        window.addStream(new URL(url).origin + "/?k=" + encodeURIComponent(s.key));
-        return;
-      }
       // Validated (live OR the idle holding page, which is meant to embed):
       // add the iframe if it isn't there yet. This is both the first-embed
       // path and the recovery path for a host that was unreachable - its tile
@@ -369,9 +368,9 @@ function pollTile(tile) {
       // (host was down when it loaded, no script of ours runs there) gets
       // reloaded when the host returns. Two missed polls required so a single
       // stats timeout on a congested link can't restart healthy playback (the
-      // key check above already covers restarts, but not --no-key or same-key).
+      // player handles key rotation itself after a socket closes).
       else if (live && +tile.dataset.down >= 2)
-        tile.querySelector("iframe").src = url;
+        tile.querySelector("iframe").src = playerUrl(url);
       if (live) tile.dataset.down = 0;
     })
     .catch(() => {

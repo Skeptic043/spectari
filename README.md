@@ -115,17 +115,23 @@ The model in plain terms:
 - **What can reach the host.** Out of the box the stream port accepts only
   Tailscale addresses, and nothing is reachable from the public internet. LAN
   access is an explicit opt-in: tick "Allow LAN viewers" and click Open port.
-- **What the viewer key does.** Each stream start generates a random key that
-  becomes part of the link, so a bare or guessed address is refused. A link
-  with an old key still works for viewers on your tailnet, whose page fetches
-  the current key from the status endpoint; a LAN-only viewer needs the fresh
-  link after a restart. The status endpoint and the page files are not
-  key-gated, which is what lets grid pages check whether a host is live.
-- **Devices with network access are trusted.** Anyone who can reach the host
-  over Tailscale or the permitted LAN can watch. Tailnet members pick up the
-  current key automatically, which is how Find streams and key rotation work.
-  The key mainly protects against stale links and casual access on an allowed
-  LAN.
+- **What the viewer key does.** Each stream start generates a random key in
+  the link. Media connections require the current key unless keyless mode is
+  explicitly selected. Status metadata is public to reachable callers and never
+  includes a key. The player and native discovery use a separate recovery
+  endpoint for trusted Tailscale and local callers. LAN-only viewers need a
+  fresh link after a restart.
+- **Browser access.** The recovery endpoint does not permit cross-origin key
+  reads. Player connections check the browser origin as well as the viewer key.
+  Grids can still read status and embed players from other hosts. These checks
+  do not authenticate native clients or prevent another page embedding a player.
+- **Host names.** Generated address links, localhost, and locally established
+  machine names are supported. Unrecognized custom aliases and reverse-proxy
+  hostnames are refused. After upgrading the host, reload older browser pages
+  and update older Watch installations to restore automatic key recovery.
+- **Devices with network access.** Tailscale and local callers retain automatic
+  key recovery. A LAN-only caller must supply the current link. The viewing key
+  supplements the network boundary and does not replace it.
 - **Tailscale is recognized by address range.** Spectari treats 100.64.0.0/10
   as Tailscale. Another VPN or a carrier-grade NAT that puts addresses from
   that range on your machine would get the same trust, so keep that in mind if

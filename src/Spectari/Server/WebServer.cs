@@ -20,6 +20,7 @@ public sealed class WebServer : IDisposable
     private readonly string _wwwroot;
     private readonly string? _viewKey;
     private readonly string _idleName;
+    private readonly ViewerAccessPolicy _access;
     public string BoundPrefix { get; }
 
     /// <summary>True when only the localhost prefix could be bound (no URL ACL for
@@ -37,7 +38,12 @@ public sealed class WebServer : IDisposable
     };
 
     public WebServer(int port, Broadcaster? broadcaster, string? viewKey = null, string? idleName = null)
+        : this(port, broadcaster, viewKey, idleName, LocalViewerAuthority.Create(port)) { }
+
+    internal WebServer(int port, Broadcaster? broadcaster, string? viewKey, string? idleName,
+        ViewerAccessPolicy access, bool loopbackOnly = false)
     {
+        _access = access;
         _broadcaster = broadcaster;
         _viewKey = viewKey;
         _idleName = string.IsNullOrWhiteSpace(idleName) ? Environment.MachineName : idleName.Trim();
@@ -47,7 +53,7 @@ public sealed class WebServer : IDisposable
         // The wildcard needs a urlacl (or admin); localhost always works for this
         // user - so falling through to localhost means "no remote access yet",
         // while failing BOTH means the port itself is taken by another process.
-        (_listener, BoundPrefix) = TryBind($"http://+:{port}/") ?? TryBind($"http://localhost:{port}/")
+        (_listener, BoundPrefix) = (loopbackOnly ? null : TryBind($"http://+:{port}/")) ?? TryBind($"http://localhost:{port}/")
             ?? throw new InvalidOperationException(DescribeBindFailure(port));
         if (BoundPrefix.Contains("localhost"))
         {
@@ -123,10 +129,40 @@ public sealed class WebServer : IDisposable
         try
         {
             path = context.Request.Url?.AbsolutePath ?? "/";
-            bool keyOk = _viewKey is null || context.Request.QueryString["k"] == _viewKey;
+            bool keyOk = ViewerAccessPolicy.KeyMatches(_viewKey, context.Request.QueryString["k"]);
+            Uri? target = context.Request.Url;
+            if (!_access.AllowsAuthority(target, context.Request.Headers["Host"]))
+            {
+                await WriteResponseAsync(context, 400, "text/plain", "unrecognized destination");
+                return;
+            }
+            string? origin = context.Request.Headers["Origin"];
+            if (path == "/api/viewer-key")
+            {
+                context.Response.Headers["Cache-Control"] = "no-store";
+                int status = context.Request.HttpMethod != "GET" ? 405
+                    : ViewerAccessPolicy.AllowsBootstrap(target!, origin,
+                        context.Request.Headers[ViewerAccessPolicy.BootstrapHeader],
+                        context.Request.RemoteEndPoint?.Address) ? 200 : 403;
+                await WriteResponseAsync(context, status, "application/json",
+                    status == 200 ? JsonSerializer.Serialize(new { key = _viewKey,
+                        state = _broadcaster?.State ?? "idle" }) : "{}");
+                return;
+            }
+            if (context.Request.HttpMethod != "GET")
+            {
+                await WriteResponseAsync(context, 405, "text/plain", "method not allowed");
+                return;
+            }
 
             if (path == "/ws")
             {
+                if (!ViewerAccessPolicy.AllowsOrigin(target!, origin))
+                {
+                    context.Response.StatusCode = 403;
+                    context.Response.Close();
+                    return;
+                }
                 if (_broadcaster is null) // idle: nothing to stream yet
                 {
                     context.Response.StatusCode = 503;
@@ -171,12 +207,6 @@ public sealed class WebServer : IDisposable
                         ["dupPct"] = _broadcaster.DupPercent,
                         ["audio"] = _broadcaster.HasAudio,
                     };
-                // Hand the current key to trusted callers only: Tailscale peers
-                // (the tailnet requires device approval) and this machine. That is
-                // what lets the stream finder and saved grid tiles keep working
-                // after a restart rotates the key, without exposing it to the LAN.
-                if (_viewKey is not null && IsTrustedCaller(context.Request.RemoteEndPoint?.Address))
-                    stats["key"] = _viewKey;
                 await WriteResponseAsync(context, 200, "application/json", JsonSerializer.Serialize(stats));
                 return;
             }
@@ -212,20 +242,9 @@ public sealed class WebServer : IDisposable
         {
             // Log before responding: a bare 500 with no detail erased exactly the
             // info a public bug report needs. ConsoleMirror tees this to the log.
-            Console.Error.WriteLine($"[http] {path} handler error: {ex}");
+            Console.Error.WriteLine($"[http] {path} handler error: {ex.GetType().Name}");
             try { context.Response.StatusCode = 500; context.Response.Close(); } catch { }
         }
-    }
-
-    /// <summary>Tailscale CGNAT range (100.64.0.0/10) or loopback.</summary>
-    private static bool IsTrustedCaller(IPAddress? address)
-    {
-        if (address is null) return false;
-        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
-        if (IPAddress.IsLoopback(address)) return true;
-        if (address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) return false;
-        byte[] b = address.GetAddressBytes();
-        return b[0] == 100 && b[1] >= 64 && b[1] <= 127;
     }
 
     private static async Task WriteResponseAsync(HttpListenerContext context, int status, string contentType, string body)

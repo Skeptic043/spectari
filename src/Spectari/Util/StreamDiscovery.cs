@@ -15,7 +15,7 @@ public static class StreamDiscovery
 {
     private static readonly string RememberedPath = AppPaths.PeersFile;
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
+    private static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(2) };
 
     /// <summary>Probe every known peer on the given ports; returns live streams only.</summary>
     public static async Task<List<DiscoveredStream>> FindAsync(IEnumerable<int> ports, CancellationToken ct)
@@ -49,7 +49,7 @@ public static class StreamDiscovery
                 using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync(ct));
                 var root = doc.RootElement;
                 if (root.GetProperty("state").GetString() != "live") return null;
-                string? key = root.TryGetProperty("key", out var k) ? k.GetString() : null;
+                string? key = await GetViewerKeyAsync(new Uri($"http://{kv.Key}/"), ct);
                 string url = $"http://{kv.Key}/" + (key is null ? "" : $"?k={key}");
                 return new DiscoveredStream(
                     kv.Value.PeerName,
@@ -74,6 +74,29 @@ public static class StreamDiscovery
             .ToList();
         SaveRemembered(found.Select(s => new Uri(s.Url).Authority).Where(a => !a.StartsWith("127.")));
         return found.OrderBy(s => s.StreamName, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static async Task<string?> GetViewerKeyAsync(Uri host, CancellationToken ct)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(host, "api/viewer-key"));
+            request.Headers.Add(Server.ViewerAccessPolicy.BootstrapHeader, "1");
+            using var response = await Http.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode) return null;
+            using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+            return json.RootElement.TryGetProperty("key", out var key) ? key.GetString() : null;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested) { return null; }
+    }
+
+    internal static string? GetSelfDnsName()
+    {
+        string? json = RunTailscale("status --json");
+        if (json is null) return null;
+        using var document = JsonDocument.Parse(json);
+        return document.RootElement.TryGetProperty("Self", out var self)
+            && self.TryGetProperty("DNSName", out var name) ? name.GetString() : null;
     }
 
     private static string? KeyOf(string url)
