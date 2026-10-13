@@ -13,7 +13,6 @@ namespace Spectari.Capture;
 internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostics
 {
     private const int CandidatePollMs = 500;
-    private const int CandidateFirstFrameMs = 5000;
 
     private readonly object _gate = new();
     private readonly Func<List<WindowDescription>> _enumerateWindows;
@@ -27,7 +26,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
     private readonly string _adapterName;
     private readonly string _adapterLuid;
     private readonly string _driverVersion;
-    private readonly HashSet<WindowIdentity> _failedCandidates = [];
+    private readonly WindowCandidateRecovery _candidateRecovery = new();
 
     private ScreenCapture? _active;
     private WindowIdentity _activeIdentity;
@@ -267,7 +266,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
                 _applicationName,
                 _activeIdentity,
                 windowsAtLoss);
-            _failedCandidates.Clear();
+            _candidateRecovery.Clear();
             _candidateEnumerationFailureLogged = false;
         }
 
@@ -316,7 +315,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
                 lock (_gate)
                 {
                     candidate = policy.SelectCandidate(currentWindows.Where(window =>
-                        !_failedCandidates.Contains(WindowReattachPolicy.IdentityOf(window))));
+                        _candidateRecovery.CanTry(WindowReattachPolicy.IdentityOf(window))));
                 }
             }
             catch (Exception ex)
@@ -353,30 +352,12 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         ScreenCapture? replacement = null;
         try
         {
-            replacement = _createCapture(candidate.Handle, Width, Height);
             bool cursorEnabled;
             lock (_gate) cursorEnabled = _cursorEnabled;
-            replacement.CursorEnabled = cursorEnabled;
-
-            long deadline = Stopwatch.GetTimestamp()
-                + CandidateFirstFrameMs * Stopwatch.Frequency / 1000;
-            while (!ct.IsCancellationRequested
-                && !replacement.TargetWasClosed
-                && replacement.CaptureError is null
-                && replacement.FrameVersion == 0
-                && Stopwatch.GetTimestamp() < deadline)
-            {
-                replacement.WaitForFreshFrame(0, 100);
-            }
-
-            if (ct.IsCancellationRequested
-                || replacement.TargetWasClosed
-                || replacement.CaptureError is not null
-                || replacement.FrameVersion == 0)
-            {
-                ReportCandidateFailure(candidate);
-                return;
-            }
+            replacement = _candidateRecovery.Prepare(WindowReattachPolicy.IdentityOf(candidate),
+                () => _createCapture(candidate.Handle, Width, Height), capture => capture.TargetWasClosed,
+                cursorEnabled, ct);
+            if (replacement is null) return;
 
             replacement.TargetClosed += OnTargetClosed;
             bool attached;
@@ -405,7 +386,8 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         }
         catch (Exception ex)
         {
-            ReportCandidateFailure(candidate, ex);
+            if (!ct.IsCancellationRequested)
+                Console.Error.WriteLine($"[window-reattach] candidate publication failed: {SingleLine(ex.Message)}");
         }
         finally
         {
@@ -415,19 +397,6 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
                 RetireInBackground(replacement, "unused candidate retirement");
             }
         }
-    }
-
-    private void ReportCandidateFailure(WindowDescription candidate, Exception? error = null)
-    {
-        WindowIdentity identity = WindowReattachPolicy.IdentityOf(candidate);
-        lock (_gate)
-        {
-            if (!_failedCandidates.Add(identity)) return;
-        }
-
-        string detail = error is null ? "no frame arrived" : SingleLine(error.Message);
-        Console.Error.WriteLine(
-            $"[window-reattach] candidate attach failed; still waiting: {detail}");
     }
 
     private void WaitForWork(int timeoutMs, CancellationToken ct)
