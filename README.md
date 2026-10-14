@@ -7,6 +7,16 @@ one exe, the people you choose open a link, and you're done. Transport is
 WebSocket and playback is MSE, with no WebRTC, signaling server, Spectari
 account, or Spectari relay service.
 
+## Screenshots
+
+Main window with source, audio, and quality controls and a browser preview.
+
+![Spectari main window with a browser window selected for sharing](docs/screenshots/main-window.png)
+
+Watch window receiving a shared browser window.
+
+![Spectari Watch window displaying a shared browser window](docs/screenshots/watch-window.png)
+
 ## What it does
 
 - Streams a whole monitor, single window, or capture device (webcam/capture
