@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Spectari.Capture;
 using Spectari.Server;
 using Spectari.Util;
+using static Spectari.Ui.Palette;
 
 namespace Spectari.Ui;
 
@@ -21,14 +22,6 @@ public sealed class MainForm : Form
     // One deliberate exception (v0.15, user request): while LIVE, the pickers
     // that only take effect through a restart are disabled - the dimming is
     // the point, it funnels changes through the Switch source button.
-    private static readonly Color Bg = Color.FromArgb(31, 33, 39);
-    private static readonly Color Card = Color.FromArgb(42, 45, 53);
-    private static readonly Color Border = Color.FromArgb(60, 65, 74);
-    private static readonly Color Fg = Color.FromArgb(212, 216, 222);
-    private static readonly Color Dim = Color.FromArgb(150, 156, 165);
-    private static readonly Color AccentDark = Color.FromArgb(48, 92, 146);
-    private static readonly Color Green = Color.FromArgb(112, 186, 130);
-    private static readonly Color Red = Color.FromArgb(210, 115, 115);
 
     // Presets are the TARGET output (resolution + fps); the bitrate lives in its
     // own Low/Medium/High dropdown whose numbers repopulate from the preset and
@@ -137,15 +130,6 @@ public sealed class MainForm : Form
     private readonly Button _switchButton = new() { Text = "Switch source", Width = 112, Height = 38 };
     private readonly TextBox _linkBox = new() { ReadOnly = true, Width = 260, TextAlign = HorizontalAlignment.Center, BorderStyle = BorderStyle.FixedSingle };
     private readonly Label _statusLabel = new() { Text = "Not streaming.", AutoSize = true };
-    private readonly TableLayoutPanel _updatePanel = new()
-    {
-        Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
-        Height = 36, Visible = false, BackColor = Card,
-        ColumnCount = 3, Padding = new Padding(12, 4, 8, 4),
-    };
-    private readonly Label _updateLabel = new() { AutoSize = true, ForeColor = Fg, Anchor = AnchorStyles.Left };
-    private readonly Button _viewReleaseButton = new() { Text = "View release", Width = 88, Height = 26, Anchor = AnchorStyles.Right };
-    private readonly Button _dismissUpdateButton = new() { Text = "Dismiss", Width = 70, Height = 26, Anchor = AnchorStyles.Right };
     private readonly TextBox _logBox = new()
     {
         Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
@@ -185,6 +169,7 @@ public sealed class MainForm : Form
     private readonly ShareLinkResolver _shareLinks;
     private readonly StreamController _streamController;
     private readonly UpdateFlow _updateFlow;
+    private readonly UpdateBanner _updateBanner;
     private readonly CaptureDeviceChangeMonitor _captureDeviceChanges;
     private WatchForm? _watchForm;
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
@@ -239,9 +224,6 @@ public sealed class MainForm : Form
     // lambda would root every dead form forever and fan each log line out to all
     // of them.
     private Action<string>? _logHandler;
-    private readonly CancellationTokenSource _updateCheckCts = new();
-    private string? _availableUpdateVersion;
-    private string? _skippedUpdateVersion;
 
     public MainForm()
     {
@@ -348,13 +330,6 @@ public sealed class MainForm : Form
         _bundleButton.Anchor = AnchorStyles.Right;
         _statusLabel.ForeColor = Dim;
 
-        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _updatePanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _updatePanel.Controls.Add(_updateLabel, 0, 0);
-        _updatePanel.Controls.Add(_viewReleaseButton, 1, 0);
-        _updatePanel.Controls.Add(_dismissUpdateButton, 2, 0);
-
         _previewPanel.Controls.Add(_previewBox);
         _previewPanel.Controls.Add(_previewPlaceholder);
         _previewPlaceholder.BringToFront();
@@ -367,7 +342,6 @@ public sealed class MainForm : Form
 
         Controls.Add(_lowerPanel);
         Controls.Add(statusPanel);
-        Controls.Add(_updatePanel);
         Controls.Add(actionPanel);
         Controls.Add(optionsRow);
         Controls.Add(_sourceGroup);
@@ -410,6 +384,9 @@ public sealed class MainForm : Form
         var menuBar = AppMenuBar.Create(() => _ = _updateFlow.CheckNowAsync());
         MainMenuStrip = menuBar;
         Controls.Add(menuBar);
+        _updateBanner = new UpdateBanner(_updateFlow, menuBar);
+        _updateBanner.Dismissed += SaveSettings;
+        Controls.Add(_updateBanner);
         _captureDeviceChanges = new CaptureDeviceChangeMonitor();
         _captureDeviceChanges.DevicesChanged += RefreshCaptureDevicesFromNotification;
 
@@ -485,8 +462,6 @@ public sealed class MainForm : Form
         _watchButton.Click += (_, _) => OpenWatchWindow();
         _bundleButton.Click += (_, _) => CopySupportBundle();
         _openLogsButton.Click += (_, _) => OpenLogsFolder();
-        _viewReleaseButton.Click += (_, _) => ViewLatestRelease();
-        _dismissUpdateButton.Click += (_, _) => DismissUpdate();
         _fixPortButton.Click += (_, _) => FixPortAccess();
         _portInput.ValueChanged += (_, _) => { UpdateLinkBox(); RestartIdleServer(); };
         _nameInput.Leave += (_, _) => RestartIdleServer(); // idle stats carry the name
@@ -518,8 +493,6 @@ public sealed class MainForm : Form
         {
             _closing = true;
             _captureDeviceChanges.Dispose();
-            _updateCheckCts.Cancel();
-            _updateCheckCts.Dispose();
             // Drop the static-event subscription first so this recreated-then-
             // closed form doesn't stay rooted receiving log lines forever.
             if (_logHandler is not null) ConsoleMirror.LineWritten -= _logHandler;
@@ -560,7 +533,7 @@ public sealed class MainForm : Form
             $"{_sourceSelection.Monitors.Count} monitors, {_sourceSelection.CaptureDevices.Count} capture devices");
         LoadSettings();
         Console.WriteLine("[boot] update check start");
-        _ = CheckForUpdatesAsync();
+        _ = _updateBanner.CheckAsync();
         UpdateLinkBox();
         RefreshSourceOptions();
         SetPreviewLayoutVisible(true);
@@ -1937,56 +1910,6 @@ public sealed class MainForm : Form
         }
     }
 
-    private async Task CheckForUpdatesAsync()
-    {
-        try
-        {
-            CancellationToken token = _updateCheckCts.Token;
-            LatestRelease? release = await UpdateChecker.GetLatestReleaseAsync(token);
-            string? remoteTag = release?.Tag;
-            if (token.IsCancellationRequested || IsDisposed || Disposing
-                || !UpdateChecker.IsRemoteVersionNewer(AppVersion.Current, remoteTag))
-                return;
-
-            string? canonical = UpdateChecker.CanonicalVersion(remoteTag);
-            string? display = UpdateChecker.DisplayVersion(remoteTag);
-            if (canonical is null || display is null
-                || string.Equals(canonical, _skippedUpdateVersion, StringComparison.Ordinal))
-                return;
-
-            _availableUpdateVersion = canonical;
-            _updateLabel.Text = $"Spectari {display} is available.";
-            _updatePanel.SetBounds(0, MainMenuStrip?.Bottom ?? 0, ClientSize.Width, _updatePanel.Height);
-            _updatePanel.BringToFront();
-            _updatePanel.Visible = true;
-        }
-        catch
-        {
-            // Update discovery must never interrupt the app or surface a failure.
-        }
-    }
-
-    private static void ViewLatestRelease()
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = UpdateChecker.LatestReleasePageUrl,
-                UseShellExecute = true,
-            });
-        }
-        catch { }
-    }
-
-    private void DismissUpdate()
-    {
-        if (_availableUpdateVersion is null) return;
-        _skippedUpdateVersion = _availableUpdateVersion;
-        _updatePanel.Visible = false;
-        SaveSettings();
-    }
-
     /// <summary>One-line description of the running session (or "not streaming"),
     /// shared by the support bundle and the crash log.</summary>
     internal string DescribeSessionState() =>
@@ -2149,7 +2072,7 @@ public sealed class MainForm : Form
             _encoderCombo.SelectedIndex = encIdx >= 0 ? encIdx : 0;
             _hostAccess.RestorePersistedState(s.AllowLan, s.AllowLanPort);
             _allowLanCheck.Checked = s.AllowLan;
-            _skippedUpdateVersion = UpdateChecker.CanonicalVersion(s.SkipUpdateVersion);
+            _updateBanner.SkippedVersion = s.SkipUpdateVersion;
             Console.WriteLine("[boot] settings load complete");
         }
         catch (Exception ex)
@@ -2186,7 +2109,7 @@ public sealed class MainForm : Form
                 Encoder = ((EncoderChoice)_encoderCombo.SelectedItem!).Value,
                 AllowLan = access.AllowLan,
                 AllowLanPort = access.Port,
-                SkipUpdateVersion = _skippedUpdateVersion ?? "",
+                SkipUpdateVersion = _updateBanner.SkippedVersion ?? "",
             };
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
             // Write to a sibling temp file, then atomically swap it in, so a crash

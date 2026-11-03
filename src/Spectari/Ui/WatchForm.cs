@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using Spectari.Util;
+using static Spectari.Ui.Palette;
 
 namespace Spectari.Ui;
 
@@ -19,9 +20,6 @@ namespace Spectari.Ui;
 /// </summary>
 public sealed class WatchForm : Form
 {
-    private static readonly Color Bg = Color.FromArgb(31, 33, 39);
-    private static readonly Color Dim = Color.FromArgb(150, 156, 165);
-
     private readonly WebView2 _web = new() { Dock = DockStyle.Fill };
     private readonly int _extraPort;
     private readonly System.Windows.Forms.Timer _discoveryTimer = new() { Interval = 30_000 };

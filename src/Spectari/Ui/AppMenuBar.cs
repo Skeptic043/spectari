@@ -1,14 +1,10 @@
+using static Spectari.Ui.Palette;
+
 namespace Spectari.Ui;
 
 /// <summary>The main window's menu bar, drawn in the window's dark palette.</summary>
 internal static class AppMenuBar
 {
-    private static readonly Color Bg = Color.FromArgb(31, 33, 39);
-    private static readonly Color Card = Color.FromArgb(42, 45, 53);
-    private static readonly Color Border = Color.FromArgb(60, 65, 74);
-    private static readonly Color Fg = Color.FromArgb(212, 216, 222);
-    private static readonly Color Highlight = Color.FromArgb(48, 92, 146);
-
     internal static MenuStrip Create(Action checkForUpdates)
     {
         var checkItem = new ToolStripMenuItem("Check for updates") { ForeColor = Fg };
@@ -37,10 +33,10 @@ internal static class AppMenuBar
         public override Color ImageMarginGradientMiddle => Card;
         public override Color ImageMarginGradientEnd => Card;
         public override Color MenuBorder => Border;
-        public override Color MenuItemBorder => Highlight;
-        public override Color MenuItemSelected => Highlight;
-        public override Color MenuItemSelectedGradientBegin => Highlight;
-        public override Color MenuItemSelectedGradientEnd => Highlight;
+        public override Color MenuItemBorder => AccentDark;
+        public override Color MenuItemSelected => AccentDark;
+        public override Color MenuItemSelectedGradientBegin => AccentDark;
+        public override Color MenuItemSelectedGradientEnd => AccentDark;
         public override Color MenuItemPressedGradientBegin => Card;
         public override Color MenuItemPressedGradientMiddle => Card;
         public override Color MenuItemPressedGradientEnd => Card;

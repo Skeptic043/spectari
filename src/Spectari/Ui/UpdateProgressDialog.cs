@@ -28,12 +28,12 @@ internal sealed class UpdateProgressDialog : Form
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(420, 116);
         Padding = new Padding(14, 12, 14, 12);
-        BackColor = Color.FromArgb(31, 33, 39);
-        ForeColor = Color.FromArgb(212, 216, 222);
+        BackColor = Palette.Bg;
+        ForeColor = Palette.Fg;
 
         _cancel.FlatStyle = FlatStyle.Flat;
-        _cancel.FlatAppearance.BorderColor = Color.FromArgb(60, 65, 74);
-        _cancel.BackColor = Color.FromArgb(42, 45, 53);
+        _cancel.FlatAppearance.BorderColor = Palette.Border;
+        _cancel.BackColor = Palette.Card;
         _cancel.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
         _cancel.Location = new Point(ClientSize.Width - Padding.Right - _cancel.Width,
             ClientSize.Height - Padding.Bottom - _cancel.Height);

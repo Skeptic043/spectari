@@ -197,6 +197,12 @@ internal sealed class UpdateFlow
     private void OpenReleasePage(string message)
     {
         Inform(message, MessageBoxIcon.Information);
+        OpenReleasePage();
+    }
+
+    /// <summary>Opens the latest release page in the default browser.</summary>
+    internal static void OpenReleasePage()
+    {
         try
         {
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo

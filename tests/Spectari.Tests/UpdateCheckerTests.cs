@@ -128,6 +128,18 @@ public sealed class UpdateCheckerTests
     }
 
     [Theory]
+    [InlineData("0.22.0", "v0.23.0", null, true)]
+    [InlineData("0.22.0", "v0.23.0", "", true)]
+    [InlineData("0.22.0", "v0.23.0", "0.23.0.0", false)]
+    [InlineData("0.22.0", "v0.23", "v0.23.0", false)]
+    [InlineData("0.22.0", "v0.24.0", "0.23.0.0", true)]
+    [InlineData("0.23.0", "v0.23.0", null, false)]
+    public void DismissedVersionIsNotOfferedAgain(string current, string remote, string? skipped, bool offered)
+    {
+        Assert.Equal(offered, UpdateChecker.ShouldOffer(current, remote, skipped));
+    }
+
+    [Theory]
     [InlineData("v0.22.0", "v0.22")]
     [InlineData("0.22.1+abc", "v0.22.1")]
     [InlineData("v1.2.3.4", "v1.2.3.4")]

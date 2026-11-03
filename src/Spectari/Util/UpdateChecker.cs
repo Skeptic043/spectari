@@ -183,6 +183,15 @@ internal static class UpdateChecker
             && remoteVersion.CompareTo(currentVersion) > 0;
     }
 
+    /// <summary>
+    /// True when the release is newer than the running build and is not the
+    /// version the user dismissed. Versions compare numerically, so v0.23 and
+    /// 0.23.0 are the same dismissal.
+    /// </summary>
+    internal static bool ShouldOffer(string? current, string? remote, string? skippedVersion) =>
+        IsRemoteVersionNewer(current, remote)
+        && !string.Equals(CanonicalVersion(remote), CanonicalVersion(skippedVersion), StringComparison.Ordinal);
+
     /// <summary>Canonical four-component value for persisted dismissal state.</summary>
     internal static string? CanonicalVersion(string? value) => ParseVersion(value)?.ToString(4);
 
