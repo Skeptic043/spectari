@@ -272,6 +272,12 @@ layoutBtn.onclick = () => {
 };
 applyLayout();
 
+function tileForOrigin(origin) {
+  return [...grid.children].find(t => {
+    try { return new URL(t.dataset.url).origin === origin; } catch { return false; }
+  });
+}
+
 // One-click add used by the app's Find streams panel (and reusable from the
 // console). Dedupes by host: a re-add with a fresh key replaces the old entry.
 window.addStream = function (u) {
@@ -284,9 +290,7 @@ window.addStream = function (u) {
     if (urls[i] === n) return true;
     urls[i] = n;
     save(urls);
-    const tile = [...grid.children].find(t => {
-      try { return new URL(t.dataset.url).origin === origin; } catch { return false; }
-    });
+    const tile = tileForOrigin(origin);
     if (tile) {
       tile.dataset.url = n;
       tile.querySelector("a.open").href = playerUrl(n);
@@ -438,8 +442,13 @@ window.setFoundStreams = function (streams, status) {
     const b = document.createElement("button");
     b.className = "ghost found";
     b.textContent = "+ " + s.name;
-    b.title = `${s.peer} · ${s.viewers} watching · click to add to the grid`;
-    b.onclick = () => window.addStream(s.url);
+    b.title = `${s.peer} · ${s.viewers} watching · click to open or close`;
+    b.onclick = () => {
+      let open = null;
+      try { open = tileForOrigin(new URL(s.url).origin); } catch (_) {}
+      if (open) removeTile(open);
+      else window.addStream(s.url);
+    };
     finder.appendChild(b);
   }
   findStatus.textContent = status || "";
