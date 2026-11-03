@@ -27,8 +27,16 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
     private readonly string _adapterLuid;
     private readonly string _driverVersion;
     private readonly WindowCandidateRecovery _candidateRecovery = new();
+    private readonly WindowStillImage _stillImage = new();
+
+    private readonly byte[] _respondingFrame;
 
     private ScreenCapture? _active;
+    private long _activeAttachedAt;
+    private byte[]? _activeStill;
+    private bool _activeAwaitingResponse;
+    private long _activeStandInVersion;
+    private bool _activeStillFailureLogged;
     private WindowIdentity _activeIdentity;
     private WindowLossGate _lossGate = new();
     private WindowReattachPolicy? _policy;
@@ -59,7 +67,10 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         _adapterName = initialCapture.AdapterName;
         _adapterLuid = initialCapture.AdapterLuid;
         _driverVersion = initialCapture.DriverVersion;
-        _waitingFrame = CreateWaitingFrame(Width, Height);
+        _waitingFrame = CreateWaitingFrame(Width, Height,
+            "Shared window closed\nWaiting for the application to return");
+        _respondingFrame = CreateWaitingFrame(Width, Height, "Waiting for the window to respond");
+        _activeAttachedAt = Environment.TickCount64;
 
         initialCapture.TargetClosed += OnTargetClosed;
         _worker = new Thread(ReattachLoop)
@@ -112,13 +123,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
 
     public long FrameVersion
     {
-        get
-        {
-            lock (_gate)
-                return _waiting || _active is null
-                    ? _waitingVersion
-                    : _activeVersionBase + _active.FrameVersion;
-        }
+        get { lock (_gate) return CurrentVersionLocked(); }
     }
 
     public long FramesArrived => FrameVersion;
@@ -176,16 +181,24 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         lock (_gate)
         {
             if (_waiting || _active is null)
-            {
-                if (buffer.Length < _waitingFrame.Length)
-                    throw new ArgumentException("Frame buffer too small", nameof(buffer));
-                _waitingFrame.CopyTo(buffer, 0);
-                return true;
-            }
+                return CopyFrame(_waitingFrame, buffer);
             active = _active;
+            if (active.FrameVersion == 0)
+            {
+                if (_activeStill is not null) return CopyFrame(_activeStill, buffer);
+                if (_activeAwaitingResponse) return CopyFrame(_respondingFrame, buffer);
+            }
         }
 
         return active.TryReadFrame(buffer);
+    }
+
+    private static bool CopyFrame(byte[] frame, byte[] buffer)
+    {
+        if (buffer.Length < frame.Length)
+            throw new ArgumentException("Frame buffer too small", nameof(buffer));
+        frame.CopyTo(buffer, 0);
+        return true;
     }
 
     private void OnTargetClosed(ScreenCapture closedCapture)
@@ -301,6 +314,8 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
             {
                 if (!IsWindow(activeIdentity.Handle))
                     OnTargetLost(active, lossGate, WindowLossReason.InvalidWindowHandle);
+                else
+                    StandInForMissingFrames(active, activeIdentity);
                 WaitForWork(CandidatePollMs, ct);
                 continue;
             }
@@ -357,6 +372,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         {
             bool cursorEnabled;
             lock (_gate) cursorEnabled = _cursorEnabled;
+            long createdAt = Environment.TickCount64;
             replacement = _candidateRecovery.Prepare(WindowReattachPolicy.IdentityOf(candidate),
                 () => _createCapture(candidate.Handle, Width, Height), capture => capture.TargetWasClosed,
                 cursorEnabled, ct);
@@ -371,6 +387,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
                 {
                     _active = replacement;
                     _activeIdentity = WindowReattachPolicy.IdentityOf(candidate);
+                    ResetStandInLocked(createdAt);
                     _lossGate = new WindowLossGate();
                     _activeVersionBase = _waitingVersion;
                     _waiting = false;
@@ -412,7 +429,77 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
 
     private long CurrentVersionLocked() => _waiting || _active is null
         ? _waitingVersion
-        : _activeVersionBase + _active.FrameVersion;
+        : _activeVersionBase + _activeStandInVersion + _active.FrameVersion;
+
+    private void ResetStandInLocked(long attachedAt)
+    {
+        _activeAttachedAt = attachedAt;
+        _activeStill = null;
+        _activeAwaitingResponse = false;
+        _activeStandInVersion = 0;
+        _activeStillFailureLogged = false;
+    }
+
+    /// <summary>Runs on every worker poll. Once <see cref="UnchangingWindowPolicy"/> says
+    /// the attached window needs a stand-in, a still image is retried until one is
+    /// taken, with the waiting frame shown meanwhile. Real frames replace either.</summary>
+    private void StandInForMissingFrames(ScreenCapture active, WindowIdentity identity)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_active, active)
+                || !UnchangingWindowPolicy.NeedsStandIn(
+                    active.FrameVersion,
+                    _activeStill is not null,
+                    active.TargetWasClosed,
+                    active.CaptureError is not null,
+                    Environment.TickCount64 - _activeAttachedAt))
+            {
+                return;
+            }
+        }
+
+        byte[]? still = null;
+        string? failure = null;
+        try
+        {
+            still = _stillImage.Capture(identity.Handle, Width, Height);
+        }
+        catch (Exception ex)
+        {
+            failure = SingleLine(ex.Message);
+        }
+
+        bool startedWaiting = false;
+        bool logFailure = false;
+        lock (_gate)
+        {
+            if (_disposed || !ReferenceEquals(_active, active) || active.FrameVersion != 0) return;
+            if (still is not null)
+            {
+                _activeStill = still;
+                _activeStandInVersion++;
+            }
+            else
+            {
+                if (!_activeAwaitingResponse)
+                {
+                    _activeAwaitingResponse = true;
+                    _activeStandInVersion++;
+                    startedWaiting = true;
+                }
+                logFailure = !_activeStillFailureLogged;
+                _activeStillFailureLogged = true;
+            }
+        }
+
+        if (still is not null)
+            Console.WriteLine("[window-reattach] the window is not changing; its still image is shown until it does.");
+        if (logFailure)
+            Console.Error.WriteLine($"[window-reattach] no still image of the window yet ({failure}); retrying.");
+        if (startedWaiting)
+            Console.WriteLine("[window-reattach] the window has delivered no frames; viewers see a waiting image until it responds.");
+    }
 
     private void AccumulateProgress(ScreenCapture capture)
     {
@@ -445,7 +532,7 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
         current.CallbackStage,
         current.ReadbackStage);
 
-    private static byte[] CreateWaitingFrame(int width, int height)
+    private static byte[] CreateWaitingFrame(int width, int height, string message)
     {
         using var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
         using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -486,30 +573,14 @@ internal sealed class WindowReattachCapture : ICaptureSource, ICaptureDiagnostic
                 new RectangleF(0, height * 0.43f, width, height * 0.12f),
                 format);
             graphics.DrawString(
-                "Shared window closed\nWaiting for the application to return",
+                message,
                 bodyFont,
                 bodyBrush,
                 new RectangleF(width * 0.08f, height * 0.56f, width * 0.84f, height * 0.18f),
                 format);
         }
 
-        byte[] frame = GC.AllocateUninitializedArray<byte>(checked(width * height * 4));
-        var bounds = new Rectangle(0, 0, width, height);
-        BitmapData data = bitmap.LockBits(bounds, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        try
-        {
-            int rowBytes = width * 4;
-            for (int y = 0; y < height; y++)
-            {
-                IntPtr source = IntPtr.Add(data.Scan0, y * data.Stride);
-                Marshal.Copy(source, frame, y * rowBytes, rowBytes);
-            }
-        }
-        finally
-        {
-            bitmap.UnlockBits(data);
-        }
-        return frame;
+        return WindowStillImage.ToBgra(bitmap);
     }
 
     private static void RetireInBackground(ScreenCapture capture, string action)

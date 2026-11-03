@@ -12,6 +12,8 @@ internal sealed class WindowCandidateRecovery(Func<long>? milliseconds = null)
         lock (_gate) return !_failures.TryGetValue(identity, out var failure) || _now() >= failure.RetryAt;
     }
 
+    /// <summary>Returns a live candidate, or null after recording a cooldown.
+    /// <see cref="UnchangingWindowPolicy.Candidate"/> decides readiness.</summary>
     internal T? Prepare<T>(WindowIdentity identity, Func<T> create, Func<T, bool> closed,
         bool cursor, CancellationToken ct) where T : class, ICaptureSource
     {
@@ -21,13 +23,15 @@ internal sealed class WindowCandidateRecovery(Func<long>? milliseconds = null)
         {
             capture = create();
             capture.CursorEnabled = cursor;
-            long deadline = _now() + 5000;
-            while (!ct.IsCancellationRequested && !closed(capture) && capture.CaptureError is null
-                && capture.FrameVersion == 0 && _now() < deadline)
+            long started = _now();
+            CandidateStartup startup;
+            while ((startup = UnchangingWindowPolicy.Candidate(capture.FrameVersion, closed(capture),
+                       capture.CaptureError is not null, _now() - started)) == CandidateStartup.Pending
+                   && !ct.IsCancellationRequested)
                 capture.WaitForFreshFrame(0, 100);
             if (ct.IsCancellationRequested) return null;
-            if (closed(capture) || capture.CaptureError is not null || capture.FrameVersion == 0)
-                throw new InvalidOperationException("candidate did not deliver a usable first frame");
+            if (startup == CandidateStartup.Failed)
+                throw new InvalidOperationException("candidate capture closed or failed before it started");
             lock (_gate) _failures.Remove(identity);
             T ready = capture;
             capture = null;

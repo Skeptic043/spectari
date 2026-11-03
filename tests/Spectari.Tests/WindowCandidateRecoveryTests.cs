@@ -6,12 +6,12 @@ namespace Spectari.Tests;
 public sealed class WindowCandidateRecoveryTests
 {
     [Fact]
-    public void SameIdentityRecoversAfterFirstFrameTimeoutAndCooldown()
+    public void SameIdentityRecoversAfterCaptureErrorAndCooldown()
     {
         long now = 0;
         var recovery = new WindowCandidateRecovery(() => now);
         var identity = new WindowIdentity((IntPtr)1, 42);
-        var failed = new Candidate(() => now += 100);
+        var failed = new Candidate(() => now += 100) { Error = new InvalidOperationException("synthetic") };
         Assert.Null(recovery.Prepare(identity, () => failed, _ => false, true, default));
         Assert.True(SpinWait.SpinUntil(() => failed.Disposals == 1, 5000));
         Assert.False(recovery.CanTry(identity));
@@ -59,10 +59,30 @@ public sealed class WindowCandidateRecoveryTests
         Assert.True(recovery.CanTry(identity));
     }
 
+    [Fact]
+    public void UnchangingCandidateIsAcceptedAfterGraceButClosedOneIsNot()
+    {
+        long now = 0;
+        var recovery = new WindowCandidateRecovery(() => now);
+        var unchanging = new WindowIdentity((IntPtr)1, 42);
+        var closed = new WindowIdentity((IntPtr)2, 42);
+
+        var still = new Candidate(() => now += 100);
+        Assert.Same(still, recovery.Prepare(unchanging, () => still, _ => false, true, default));
+        Assert.True(now >= UnchangingWindowPolicy.FirstFrameGraceMs);
+        Assert.Equal(0, still.Disposals);
+        still.Dispose();
+
+        Assert.Null(recovery.Prepare(closed, () => new Candidate(() => now += 100), _ => true, true, default));
+        Assert.False(recovery.CanTry(closed));
+        Assert.True(recovery.CanTry(unchanging));
+    }
+
     private sealed class Candidate(Action wait) : ICaptureSource
     {
         internal int Disposals;
         internal long Version;
+        internal Exception? Error;
         public int Width => 1;
         public int Height => 1;
         public uint GpuVendorId => 0;
@@ -71,7 +91,7 @@ public sealed class WindowCandidateRecoveryTests
         public string DriverVersion => "";
         public long FrameVersion => Version;
         public long FramesArrived => Version;
-        public Exception? CaptureError => null;
+        public Exception? CaptureError => Error;
         public bool CursorEnabled { set { } }
         public bool WaitForFreshFrame(long version, int timeout) { wait(); return Version > version; }
         public bool TryReadFrame(byte[] buffer) => true;
