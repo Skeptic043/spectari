@@ -38,6 +38,16 @@ public static class SingleInstance
         return false;
     }
 
+    /// <summary>Gives up the lock so a relaunched copy can start before this
+    /// process exits. Must run on the thread that called TryAcquire.</summary>
+    public static void Release()
+    {
+        try { _mutex?.ReleaseMutex(); }
+        catch (ApplicationException) { }
+        _mutex?.Dispose();
+        _mutex = null;
+    }
+
     private static readonly IntPtr HWND_BROADCAST = new(0xFFFF);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]

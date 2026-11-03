@@ -22,6 +22,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        Util.UpdateInstaller.WaitForUpdatingProcess();
         Util.AppPaths.MigrateLegacyData();
 
         if (args.Length == 0)
@@ -78,6 +79,7 @@ internal static class Program
             }
 
             Console.WriteLine("[boot] single-instance check complete");
+            Util.UpdateInstaller.CleanUpAtStartup();
             InstallCrashLogging();
             Console.WriteLine("[boot] crash handlers installed");
             Encode.FfmpegEncoder.WarmBuildInfo();

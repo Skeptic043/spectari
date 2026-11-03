@@ -184,6 +184,7 @@ public sealed class MainForm : Form
     private readonly HostAccessService _hostAccess;
     private readonly ShareLinkResolver _shareLinks;
     private readonly StreamController _streamController;
+    private readonly UpdateFlow _updateFlow;
     private readonly CaptureDeviceChangeMonitor _captureDeviceChanges;
     private WatchForm? _watchForm;
     private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
@@ -247,7 +248,7 @@ public sealed class MainForm : Form
         Console.WriteLine("[boot] form constructor enter");
         Text = "Spectari";
         MinimumSize = new Size(680, 600);
-        Size = new Size(840, 690);
+        Size = new Size(840, 714);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Bg;
         ForeColor = Fg;
@@ -405,6 +406,10 @@ public sealed class MainForm : Form
             ConsoleMirror.WriteClassifiedLine));
         _streamController.StateChanged += RenderStreamState;
         _streamController.SessionStarted += RenderStartedStream;
+        _updateFlow = new UpdateFlow(this, _streamController);
+        var menuBar = AppMenuBar.Create(() => _ = _updateFlow.CheckNowAsync());
+        MainMenuStrip = menuBar;
+        Controls.Add(menuBar);
         _captureDeviceChanges = new CaptureDeviceChangeMonitor();
         _captureDeviceChanges.DevicesChanged += RefreshCaptureDevicesFromNotification;
 
@@ -1937,21 +1942,21 @@ public sealed class MainForm : Form
         try
         {
             CancellationToken token = _updateCheckCts.Token;
-            string? remoteTag = await UpdateChecker.GetLatestReleaseTagAsync(token);
+            LatestRelease? release = await UpdateChecker.GetLatestReleaseAsync(token);
+            string? remoteTag = release?.Tag;
             if (token.IsCancellationRequested || IsDisposed || Disposing
                 || !UpdateChecker.IsRemoteVersionNewer(AppVersion.Current, remoteTag))
                 return;
 
             string? canonical = UpdateChecker.CanonicalVersion(remoteTag);
-            Version? remoteVersion = UpdateChecker.ParseVersion(remoteTag);
-            if (canonical is null || remoteVersion is null
+            string? display = UpdateChecker.DisplayVersion(remoteTag);
+            if (canonical is null || display is null
                 || string.Equals(canonical, _skippedUpdateVersion, StringComparison.Ordinal))
                 return;
 
             _availableUpdateVersion = canonical;
-            int displayParts = remoteVersion.Revision != 0 ? 4 : remoteVersion.Build != 0 ? 3 : 2;
-            _updateLabel.Text = $"Spectari v{remoteVersion.ToString(displayParts)} is available.";
-            _updatePanel.SetBounds(0, 0, ClientSize.Width, _updatePanel.Height);
+            _updateLabel.Text = $"Spectari {display} is available.";
+            _updatePanel.SetBounds(0, MainMenuStrip?.Bottom ?? 0, ClientSize.Width, _updatePanel.Height);
             _updatePanel.BringToFront();
             _updatePanel.Visible = true;
         }

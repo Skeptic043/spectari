@@ -194,6 +194,38 @@ internal sealed class StreamController : IDisposable
         return true;
     }
 
+    /// <summary>
+    /// Stops any running, starting, switching, or retrying stream and completes
+    /// once the controller is back on the idle surface. False on timeout.
+    /// </summary>
+    internal async Task<bool> StopAndWaitAsync(TimeSpan timeout)
+    {
+        if (IsIdleSurface) return true;
+
+        var idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void OnStateChanged(StreamControllerStateChange _)
+        {
+            if (IsIdleSurface) idle.TrySetResult();
+        }
+
+        StateChanged += OnStateChanged;
+        try
+        {
+            if (State == StreamControllerState.Switching)
+            {
+                _pendingSwitch = null;
+                _pendingSwitchTrigger = null;
+            }
+            Stop();
+            if (IsIdleSurface) return true;
+            return await Task.WhenAny(idle.Task, Task.Delay(timeout)) == idle.Task;
+        }
+        finally
+        {
+            StateChanged -= OnStateChanged;
+        }
+    }
+
     internal bool StopForClose()
     {
         _closing = true;
