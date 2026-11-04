@@ -171,7 +171,10 @@ public sealed class FfmpegEncoder : IDisposable
                 Console.WriteLine("[encoder] cleared the cached probe verdict; the next Auto launch re-probes the GPU encoder.");
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[encoder] could not clear the cached probe verdict: {ex.Message}");
+        }
     }
 
     /// <summary>Picks the hardware encoder for this GPU vendor, then PROVES it can
@@ -208,7 +211,10 @@ public sealed class FfmpegEncoder : IDisposable
                 File.WriteAllText(CachePath, token);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[encoder] could not save the probe verdict; the next launch probes again: {ex.Message}");
+        }
         return preferred;
     }
 
@@ -352,10 +358,10 @@ public sealed class FfmpegEncoder : IDisposable
             _ = Task.Run(() =>
             {
                 try { _ = FfmpegBuildInfo(); }
-                catch { }
+                catch { /* diagnostics only */ }
             });
         }
-        catch { }
+        catch { /* diagnostics only */ }
     }
 
     private static readonly object _buildInfoLogLock = new();
@@ -382,7 +388,7 @@ public sealed class FfmpegEncoder : IDisposable
             Console.WriteLine($"[encoder] ffmpeg {version}");
             Console.WriteLine($"[encoder] ffmpeg sha256: {sha256}");
         }
-        catch { }
+        catch { /* diagnostics only */ }
     }
 
     /// <summary>Encodes a second of realistic 1080p60 motion with the SAME encoder
@@ -408,7 +414,7 @@ public sealed class FfmpegEncoder : IDisposable
             using var p = Process.Start(psi)!;
             Util.ChildJob.Adopt(p);
             // A stall shows up as a hang: WaitForExit times out, we kill it, it fails.
-            if (!p.WaitForExit(12000)) { try { p.Kill(entireProcessTree: true); } catch { } return false; }
+            if (!p.WaitForExit(12000)) { try { p.Kill(entireProcessTree: true); } catch { /* best-effort cleanup */ } return false; }
             return p.ExitCode == 0;
         }
         catch (Exception ex)
@@ -434,7 +440,7 @@ public sealed class FfmpegEncoder : IDisposable
         lock (_lifecycleGate)
         {
             if (_disposed) return;
-            try { _stdin.Close(); } catch { }
+            try { _stdin.Close(); } catch { /* best-effort cleanup */ }
             _ = TryStopForDisposal();
             _process.Dispose();
             _disposed = true;

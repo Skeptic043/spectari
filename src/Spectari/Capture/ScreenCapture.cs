@@ -329,7 +329,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
         _targetWasClosed = true;
         _captureError ??= new InvalidOperationException(
             "the captured window was closed; start a new share once it's running again");
-        try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
+        try { _frameSignal.Set(); } catch (ObjectDisposedException) { /* already disposed */ }
         try
         {
             TargetClosed?.Invoke(this);
@@ -426,7 +426,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
                 TryWriteWindowDiagnostic(
                     DiagnosticLogEventText.WindowFrameDeliveryRate(deliveryRate));
             }
-            try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
+            try { _frameSignal.Set(); } catch (ObjectDisposedException) { /* already disposed */ }
         }
         catch (Exception ex)
         {
@@ -743,7 +743,7 @@ public sealed class ScreenCapture : ICaptureSource, ICaptureDiagnostics
     private static void TryWriteWindowDiagnostic(string line)
     {
         try { ConsoleMirror.WriteDiagnosticLine(line); }
-        catch { }
+        catch { /* diagnostics only */ }
     }
 
     public void Dispose()

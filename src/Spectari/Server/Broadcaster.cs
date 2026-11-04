@@ -122,8 +122,8 @@ public sealed class Broadcaster
                 Interlocked.Decrement(ref _reserved);
                 using var closeCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 closeCts.CancelAfter(TimeSpan.FromSeconds(2));
-                try { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "stream is full (viewer limit reached)", closeCts.Token); } catch { }
-                try { socket.Abort(); } catch { }
+                try { await socket.CloseAsync(WebSocketCloseStatus.PolicyViolation, "stream is full (viewer limit reached)", closeCts.Token); } catch { /* viewer gone */ }
+                try { socket.Abort(); } catch { /* viewer gone */ }
                 Console.WriteLine($"[ws] viewer rejected; at capacity ({MaxViewers})");
                 return;
             }
@@ -187,8 +187,8 @@ public sealed class Broadcaster
                         if (result.MessageType == WebSocketMessageType.Close) break;
                     }
                 }
-                catch { }
-                finally { try { linkedCts.Cancel(); } catch { } }
+                catch { /* socket closed or stream stopping */ }
+                finally { try { linkedCts.Cancel(); } catch { /* best-effort cleanup */ } }
             }, token);
 
             await foreach (var message in client.Queue.Reader.ReadAllAsync(token))
@@ -197,21 +197,21 @@ public sealed class Broadcaster
                 await socket.SendAsync(message, WebSocketMessageType.Binary, true, token);
             }
         }
-        catch (OperationCanceledException) { }
-        catch (WebSocketException) { }
+        catch (OperationCanceledException) { /* stream stopping */ }
+        catch (WebSocketException) { /* viewer gone */ }
         finally
         {
             // Idempotent: also wakes the receive loop if the send loop is the one
             // that ended (e.g. a socket error), and is guarded in case the CTS is
             // already cancelled/disposed.
-            try { linkedCts.Cancel(); } catch { }
+            try { linkedCts.Cancel(); } catch { /* best-effort cleanup */ }
             if (client is not null)
             {
                 _clients.TryRemove(id, out _);
                 client.Queue.Writer.TryComplete(); // nothing else can queue onto a dead client
                 Console.WriteLine($"[ws] viewer disconnected ({_clients.Count} total)");
             }
-            try { socket.Abort(); } catch { }
+            try { socket.Abort(); } catch { /* viewer gone */ }
             if (receiveLoop is not null)
                 await Task.WhenAny(receiveLoop, Task.Delay(1000, CancellationToken.None));
             if (reserved) Interlocked.Decrement(ref _reserved); // exactly one release per reservation

@@ -567,7 +567,7 @@ internal sealed class WasapiEndpointAudioCapture : IDisposable
             {
                 if (started && client != 0)
                 {
-                    try { _ = CoreAudioInterop.StopAudioClient(client); } catch { }
+                    try { _ = CoreAudioInterop.StopAudioClient(client); } catch { /* best-effort cleanup */ }
                 }
                 CoreAudioInterop.Release(ref capture);
                 CoreAudioInterop.Release(ref client);
@@ -582,7 +582,7 @@ internal sealed class WasapiEndpointAudioCapture : IDisposable
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
-            try { _ = CoreAudioInterop.StopAudioClient(_client); } catch { }
+            try { _ = CoreAudioInterop.StopAudioClient(_client); } catch { /* best-effort cleanup */ }
             nint capture = Capture;
             Capture = 0;
             CoreAudioInterop.Release(ref capture);
@@ -606,7 +606,7 @@ internal sealed class WasapiEndpointAudioCapture : IDisposable
     private static void RevertMmcss(IntPtr handle)
     {
         if (handle == IntPtr.Zero) return;
-        try { AvRevertMmThreadCharacteristics(handle); } catch { }
+        try { AvRevertMmThreadCharacteristics(handle); } catch { /* best-effort cleanup */ }
     }
 
     [DllImport("ole32.dll")]

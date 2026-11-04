@@ -74,7 +74,7 @@ public sealed class WebServer : IDisposable
         }
         catch (HttpListenerException)
         {
-            try { listener.Close(); } catch { }
+            try { listener.Close(); } catch { /* best-effort cleanup */ }
             return null;
         }
     }
@@ -234,7 +234,7 @@ public sealed class WebServer : IDisposable
             // Log before responding: a bare 500 with no detail erased exactly the
             // info a public bug report needs. ConsoleMirror tees this to the log.
             Console.Error.WriteLine($"[http] {path} handler error: {ex.GetType().Name}");
-            try { context.Response.StatusCode = 500; context.Response.Close(); } catch { }
+            try { context.Response.StatusCode = 500; context.Response.Close(); } catch { /* client gone */ }
         }
     }
 
@@ -250,7 +250,7 @@ public sealed class WebServer : IDisposable
 
     public void Dispose()
     {
-        try { _listener.Stop(); } catch { }
+        try { _listener.Stop(); } catch { /* best-effort cleanup */ }
         _listener.Close();
     }
 }

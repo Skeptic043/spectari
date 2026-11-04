@@ -101,7 +101,7 @@ public sealed class DuplicationCapture : ICaptureSource
                     if (foundAdapter.CheckInterfaceSupport(typeof(IDXGIDevice), out long umd))
                         DriverVersion = $"{(umd >> 48) & 0xFFFF}.{(umd >> 32) & 0xFFFF}.{(umd >> 16) & 0xFFFF}.{umd & 0xFFFF}";
                 }
-                catch { }
+                catch { /* diagnostics only */ }
 
                 D3D11.D3D11CreateDevice(
                     foundAdapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
@@ -170,15 +170,15 @@ public sealed class DuplicationCapture : ICaptureSource
             // foundOutput/foundAdapter are already released by the inner finally above.
             // No thread to stop: its Start() is the last statement, so a throw here
             // always precedes it.
-            try { _stagingB?.Dispose(); } catch { }
-            try { _stagingA?.Dispose(); } catch { }
-            try { _latest?.Dispose(); } catch { }
-            try { _duplication?.Dispose(); } catch { }
-            try { _output?.Dispose(); } catch { }
-            try { _context?.Dispose(); } catch { }
-            try { _device?.Dispose(); } catch { }
-            try { _frameSignal.Dispose(); } catch { }
-            try { _cts.Dispose(); } catch { }
+            try { _stagingB?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _stagingA?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _latest?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _duplication?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _output?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _context?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _device?.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _frameSignal.Dispose(); } catch { /* best-effort cleanup */ }
+            try { _cts.Dispose(); } catch { /* best-effort cleanup */ }
             throw;
         }
     }
@@ -229,11 +229,11 @@ public sealed class DuplicationCapture : ICaptureSource
                 {
                     // Guard the release so its own failure can't mask the original
                     // exception - the outer catch logs that one.
-                    try { _duplication.ReleaseFrame(); } catch { }
+                    try { _duplication.ReleaseFrame(); } catch { /* best-effort cleanup */ }
                 }
                 _hasFrame = true;
                 Interlocked.Increment(ref _framesArrived);
-                try { _frameSignal.Set(); } catch (ObjectDisposedException) { }
+                try { _frameSignal.Set(); } catch (ObjectDisposedException) { /* already disposed */ }
                 consecutiveFailures = 0;
             }
             catch (Exception ex)
@@ -255,7 +255,7 @@ public sealed class DuplicationCapture : ICaptureSource
 
     private void Reduplicate()
     {
-        try { _duplication.Dispose(); } catch { }
+        try { _duplication.Dispose(); } catch { /* best-effort cleanup */ }
         _duplication = _output.DuplicateOutput(_device);
     }
 
@@ -430,7 +430,7 @@ public sealed class DuplicationCapture : ICaptureSource
     {
         _cts.Cancel();
         _thread.Join(2000);
-        try { _duplication.Dispose(); } catch { }
+        try { _duplication.Dispose(); } catch { /* best-effort cleanup */ }
         _output.Dispose();
         _frameSignal.Dispose();
         _latest.Dispose();

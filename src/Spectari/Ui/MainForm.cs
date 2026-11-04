@@ -352,7 +352,7 @@ public sealed class MainForm : Form
                 if (Environment.CurrentManagedThreadId == logUiThreadId) AppendLogToUi(line);
                 else BeginInvoke(() => AppendLogToUi(line));
             }
-            catch { }
+            catch { /* form closing */ }
         };
         ConsoleMirror.LineWritten += _logHandler;
 
@@ -1445,7 +1445,7 @@ public sealed class MainForm : Form
     /// can't hang the exit. Guarded - a crash handler must never throw again.</summary>
     internal void StopSessionForShutdown()
     {
-        try { _streamController.StopForShutdown(); } catch { }
+        try { _streamController.StopForShutdown(); } catch { /* shutdown */ }
     }
 
     private static List<string> GpuAdapters()
@@ -1464,7 +1464,7 @@ public sealed class MainForm : Form
                 }
             }
         }
-        catch { }
+        catch { /* diagnostics only */ }
         if (list.Count == 0) list.Add("unknown");
         return list;
     }
@@ -1479,7 +1479,7 @@ public sealed class MainForm : Form
             if (adapter.CheckInterfaceSupport(typeof(Vortice.DXGI.IDXGIDevice), out long umd))
                 return $"{(umd >> 48) & 0xFFFF}.{(umd >> 32) & 0xFFFF}.{(umd >> 16) & 0xFFFF}.{umd & 0xFFFF}";
         }
-        catch { }
+        catch { /* diagnostics only */ }
         return "?";
     }
 
@@ -1501,7 +1501,7 @@ public sealed class MainForm : Form
                 }
             }
         }
-        catch { }
+        catch { /* diagnostics only */ }
         return (0, "?", "?");
     }
 

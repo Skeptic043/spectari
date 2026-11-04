@@ -128,9 +128,9 @@ public sealed class ProcessAudioCapture : IDisposable
             // REL-2: release both COM objects we may have acquired before the throw.
             // _capture is a readonly field - it reads null unless GetService ran, so
             // the null check keeps the pre-GetService failure path safe.
-            if (clientStarted) { try { _client.Stop(); } catch { } }
-            try { if (_capture is not null) Marshal.FinalReleaseComObject(_capture); } catch { }
-            try { Marshal.FinalReleaseComObject(_client); } catch { }
+            if (clientStarted) { try { _client.Stop(); } catch { /* best-effort cleanup */ } }
+            try { if (_capture is not null) Marshal.FinalReleaseComObject(_capture); } catch { /* best-effort cleanup */ }
+            try { Marshal.FinalReleaseComObject(_client); } catch { /* best-effort cleanup */ }
             throw;
         }
 
@@ -401,7 +401,7 @@ public sealed class ProcessAudioCapture : IDisposable
         {
             // Release the async-operation COM object (distinct from the returned client)
             // and the activation-params buffer regardless of outcome.
-            if (op is not null) { try { Marshal.FinalReleaseComObject(op); } catch { } }
+            if (op is not null) { try { Marshal.FinalReleaseComObject(op); } catch { /* best-effort cleanup */ } }
             Marshal.FreeHGlobal(paramsPtr);
         }
     }
@@ -413,7 +413,7 @@ public sealed class ProcessAudioCapture : IDisposable
         // by then, the set must not throw back into COM.
         public void ActivateCompleted(IActivateAudioInterfaceAsyncOperation op)
         {
-            try { Done.Set(); } catch (ObjectDisposedException) { }
+            try { Done.Set(); } catch (ObjectDisposedException) { /* already disposed */ }
         }
     }
 
@@ -426,7 +426,7 @@ public sealed class ProcessAudioCapture : IDisposable
         // Stop the WASAPI client first so the capture thread's reads drain and it
         // exits promptly; only then complete the queue (producer is done - TryEnqueue
         // also tolerates a late completion as a belt) and join the writer.
-        try { _client.Stop(); } catch { }
+        try { _client.Stop(); } catch { /* best-effort cleanup */ }
         // Gate the COM release on the capture thread ACTUALLY having stopped: releasing
         // _capture/_client while a live capture thread is still calling into them is a
         // use-after-free. If the thread is wedged, skip the release - a leaked COM object
@@ -436,8 +436,8 @@ public sealed class ProcessAudioCapture : IDisposable
         _writerThread.Join(2000); // writer uses only _onSamples, so its join doesn't gate the COM release
         if (captureStopped)
         {
-            try { Marshal.FinalReleaseComObject(_capture); } catch { }
-            try { Marshal.FinalReleaseComObject(_client); } catch { }
+            try { Marshal.FinalReleaseComObject(_capture); } catch { /* best-effort cleanup */ }
+            try { Marshal.FinalReleaseComObject(_client); } catch { /* best-effort cleanup */ }
         }
         _cts.Dispose();
     }
@@ -457,7 +457,7 @@ public sealed class ProcessAudioCapture : IDisposable
     private static void RevertMmcss(IntPtr handle)
     {
         if (handle == IntPtr.Zero) return;
-        try { AvRevertMmThreadCharacteristics(handle); } catch { }
+        try { AvRevertMmThreadCharacteristics(handle); } catch { /* best-effort cleanup */ }
     }
 
     // ---- interop definitions --------------------------------------------

@@ -42,7 +42,7 @@ public static class AppPaths
             {
                 // A half-copied destination would shadow the intact legacy data on
                 // every later run; remove it so the next start retries migration.
-                try { Directory.Delete(RootDirectory, recursive: true); } catch { }
+                try { Directory.Delete(RootDirectory, recursive: true); } catch { /* best-effort cleanup */ }
                 MigrationNote = $"[data] could not migrate app data from {LegacyRootDirectory} to {RootDirectory}; continuing with defaults.";
             }
         }

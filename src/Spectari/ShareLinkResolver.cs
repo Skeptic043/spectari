@@ -199,8 +199,9 @@ internal sealed class ShareLinkResolver
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[links] could not list network addresses: {ex.Message}");
         }
 
         IReadOnlyList<string> ranked = RankAddresses(candidates);

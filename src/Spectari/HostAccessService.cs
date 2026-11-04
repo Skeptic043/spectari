@@ -264,8 +264,9 @@ internal sealed class HostAccessService
                 return owner.Length == 0 ? null : owner;
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[host-access] could not read the port reservation owner: {ex.Message}");
         }
         return null;
     }
@@ -289,8 +290,9 @@ internal sealed class HostAccessService
                 return address.Length == 0 ? null : address;
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Console.Error.WriteLine($"[host-access] could not read the firewall rule scope: {ex.Message}");
         }
         return null;
     }

@@ -40,9 +40,9 @@ public static class ProcessRunner
 
         if (!p.WaitForExit(timeoutMs))
         {
-            try { p.Kill(entireProcessTree: true); } catch { }
+            try { p.Kill(entireProcessTree: true); } catch { /* process already exited */ }
             // Pipes are closing now the child is dead; give the readers a moment.
-            try { Task.WaitAll(new Task[] { outTask, errTask }, 1000); } catch { }
+            try { Task.WaitAll(new Task[] { outTask, errTask }, 1000); } catch { /* best-effort cleanup */ }
             return new ProcessResult(
                 TimedOut: true,
                 ExitCode: null,

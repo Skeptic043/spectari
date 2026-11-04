@@ -114,7 +114,7 @@ internal sealed class AudioPipeline : IDisposable
         void WriteToPipe(byte[] buf, int len)
         {
             // Pipe closure during shutdown is expected and unblocks this writer.
-            try { _pipe.Write(buf, 0, len); } catch { }
+            try { _pipe.Write(buf, 0, len); } catch { /* pipe closed during shutdown */ }
         }
 
         try

@@ -54,7 +54,7 @@ public sealed class WatchForm : Form
         MinimumSize = new Size(640, 400);
         StartPosition = FormStartPosition.CenterScreen;
         BackColor = Bg;
-        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* default icon */ }
 
         Controls.Add(_web);
         Controls.Add(_fallback);
@@ -132,7 +132,7 @@ public sealed class WatchForm : Form
                     if (doc.RootElement.TryGetProperty("find", out JsonElement _))
                         _ = FindStreamsAsync(automatic: false);
                 }
-                catch { }
+                catch { /* page messages are untrusted; ignore malformed ones */ }
             };
             // The initial search waits for the page: results land in its DOM.
             _web.CoreWebView2.NavigationCompleted += (_, e) =>
@@ -207,7 +207,7 @@ public sealed class WatchForm : Form
         catch (Exception ex)
         {
             if (!automatic && !IsDisposed && !Disposing && !_closeCts.IsCancellationRequested)
-                try { await PushFinderAsync([], $"search failed: {ex.Message}"); } catch { }
+                try { await PushFinderAsync([], $"search failed: {ex.Message}"); } catch { /* window closing */ }
         }
         finally
         {

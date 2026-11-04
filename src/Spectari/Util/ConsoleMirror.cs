@@ -10,7 +10,7 @@ public static class ConsoleMirror
     private const int OperatorHistoryLimit = 500;
     private static readonly Lock SinkGate = new();
     private static readonly Queue<string> OperatorHistory = new();
-    private static StreamWriter? _logFile;
+    private static BackgroundLogWriter? _logWriter;
     private static TextWriter? _originalOut;
     private static TextWriter? _originalError;
     internal static bool ShowViewerLinksInConsole { get; private set; }
@@ -26,11 +26,19 @@ public static class ConsoleMirror
                 Directory.CreateDirectory(logDir);
                 foreach (var old in new DirectoryInfo(logDir).GetFiles("*.log")
                              .OrderByDescending(f => f.CreationTimeUtc).Skip(9))
-                    try { old.Delete(); } catch { }
+                    try { old.Delete(); } catch { /* old log in use; retention is best-effort */ }
                 LogFilePath = Path.Combine(logDir, $"spectari-{DateTime.Now:yyyyMMdd-HHmmss}.log");
-                _logFile = new StreamWriter(LogFilePath, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true)) { AutoFlush = true };
+                var file = new StreamWriter(LogFilePath, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+                _logWriter = new BackgroundLogWriter(new LogFileSink(file, LogFileSink.DefaultMaxBytes));
+                // Exit paths, including the fatal-error exit, wait briefly so the
+                // last lines reach the file.
+                AppDomain.CurrentDomain.ProcessExit += (_, _) => _logWriter.Drain(TimeSpan.FromSeconds(1));
             }
-            catch { _logFile = null; }
+            catch (Exception ex)
+            {
+                _logWriter = null;
+                (_originalError ?? Console.Error).WriteLine($"[log] could not create the log file: {ex.Message}");
+            }
         }
         _originalOut = Console.Out;
         _originalError = Console.Error;
@@ -95,7 +103,7 @@ public static class ConsoleMirror
         Action<string>? handler = null;
         lock (SinkGate)
         {
-            try { _logFile?.WriteLine($"{DateTime.Now:HH:mm:ss} {safeLine}"); } catch { }
+            _logWriter?.Enqueue(safeLine);
             if (showToOperator)
             {
                 OperatorHistory.Enqueue(safeLine);

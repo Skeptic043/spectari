@@ -43,7 +43,7 @@ public static class SingleInstance
     public static void Release()
     {
         try { _mutex?.ReleaseMutex(); }
-        catch (ApplicationException) { }
+        catch (ApplicationException) { /* not owned */ }
         _mutex?.Dispose();
         _mutex = null;
     }

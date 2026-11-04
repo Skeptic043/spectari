@@ -118,7 +118,10 @@ public static class StreamDiscovery
                 foreach (var address in nic.GetIPProperties().UnicastAddresses)
                     addresses.Add(address.Address.ToString());
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[discovery] could not list local addresses: {ex.Message}");
+        }
         return addresses;
     }
 
@@ -149,7 +152,10 @@ public static class StreamDiscovery
             if (root.TryGetProperty("Peer", out var peerMap) && peerMap.ValueKind == JsonValueKind.Object)
                 foreach (var p in peerMap.EnumerateObject()) AddNode(p.Value, false);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[discovery] could not read Tailscale peers: {ex.Message}");
+        }
         return peers;
     }
 
@@ -199,7 +205,10 @@ public static class StreamDiscovery
             if (File.Exists(RememberedPath))
                 return JsonSerializer.Deserialize<List<string>>(File.ReadAllText(RememberedPath)) ?? [];
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[discovery] could not read remembered streams: {ex.Message}");
+        }
         return [];
     }
 
@@ -217,6 +226,9 @@ public static class StreamDiscovery
             File.WriteAllText(tmp, JsonSerializer.Serialize(merged));
             File.Move(tmp, RememberedPath, overwrite: true);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[discovery] could not save remembered streams: {ex.Message}");
+        }
     }
 }

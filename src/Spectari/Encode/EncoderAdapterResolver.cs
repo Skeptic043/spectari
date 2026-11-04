@@ -128,6 +128,7 @@ internal static class EncoderAdapterResolver
         }
         catch
         {
+            // Diagnostics only: the driver version is informational.
         }
 
         return "?";

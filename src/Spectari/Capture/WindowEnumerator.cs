@@ -46,7 +46,7 @@ public static class WindowEnumerator
 
                 GetWindowThreadProcessId(hWnd, out uint pid);
                 string process = "?";
-                try { process = Process.GetProcessById((int)pid).ProcessName; } catch { }
+                try { process = Process.GetProcessById((int)pid).ProcessName; } catch { /* process already exited */ }
 
                 var identity = new WindowIdentity(hWnd, pid);
                 seen.Add(identity);

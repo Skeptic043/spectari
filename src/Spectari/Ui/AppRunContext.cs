@@ -48,7 +48,7 @@ internal sealed class AppRunContext : ApplicationContext
     /// registration is needed; guarded so it can't throw a second exception.</summary>
     public void StopSessionForShutdown()
     {
-        try { if (_main is { IsDisposed: false } m) m.StopSessionForShutdown(); } catch { }
+        try { if (_main is { IsDisposed: false } m) m.StopSessionForShutdown(); } catch { /* shutdown */ }
     }
 
     private void ShowMain()

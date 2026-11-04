@@ -381,7 +381,7 @@ public sealed class StreamSession
         Console.WriteLine("[shutdown] stopping…");
         SetTeardownStage("stopping background tasks");
         _cts.Cancel();
-        try { Task.WaitAll(new[] { splitterTask, serverTask }, 3000); } catch { }
+        try { Task.WaitAll(new[] { splitterTask, serverTask }, 3000); } catch { /* shutdown */ }
         SetTeardownStage("background tasks stopped");
         return exitReason; // audioTeardown finishes the audio cleanup on the way out
     }

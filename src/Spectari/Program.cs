@@ -112,7 +112,7 @@ internal static class Program
             // not keep streaming to viewers while this waits for the OK click.
             // ExitAfterFatal calls the same stop again afterwards; it is idempotent
             // (guarded, and StreamSession.Stop just re-cancels + re-joins a dead thread).
-            try { Ui.AppRunContext.Current?.StopSessionForShutdown(); } catch { }
+            try { Ui.AppRunContext.Current?.StopSessionForShutdown(); } catch { /* shutdown */ }
             try
             {
                 System.Windows.Forms.MessageBox.Show(
@@ -121,7 +121,7 @@ internal static class Program
                     "Spectari", System.Windows.Forms.MessageBoxButtons.OK,
                     System.Windows.Forms.MessageBoxIcon.Error);
             }
-            catch { }
+            catch { /* crash path: the log already has the details */ }
             ExitAfterFatal();
         };
 
@@ -149,7 +149,7 @@ internal static class Program
     /// (dialog-less) path relies on this one. Never throws.</summary>
     private static void ExitAfterFatal()
     {
-        try { Ui.AppRunContext.Current?.StopSessionForShutdown(); } catch { }
+        try { Ui.AppRunContext.Current?.StopSessionForShutdown(); } catch { /* shutdown */ }
         Environment.Exit(1); // nonzero: a runtime failure, same code the console path uses for one
     }
 
@@ -167,7 +167,7 @@ internal static class Program
             w.WriteLine($"[crash] {Ui.AppRunContext.Current?.DescribeState() ?? "no window context"}");
             w.WriteLine($"[crash] {ex?.ToString() ?? "(no exception object)"}");
         }
-        catch { }
+        catch { /* crash path: nowhere left to report */ }
     }
 
     /// <summary>The exe is WinExe (no console window on double-click), so console
@@ -197,7 +197,7 @@ internal static class Program
     {
         // EnsureConsole rebinds stdout/stderr; also rebind stdin so ReadLine can
         // pick up the elevated console the bat handed us.
-        try { Console.SetIn(new StreamReader(Console.OpenStandardInput())); } catch { }
+        try { Console.SetIn(new StreamReader(Console.OpenStandardInput())); } catch { /* no console to attach */ }
 
         string me = $"{Environment.UserDomainName}\\{Environment.UserName}";
         HostReservationReview reservation = HostAccessService.ReviewReservation(port, me);

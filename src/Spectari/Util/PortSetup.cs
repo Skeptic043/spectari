@@ -67,7 +67,7 @@ public static class PortSetup
                 CreateNoWindow = true,
             });
             if (p is null) return -1;
-            if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { } return -1; }
+            if (!p.WaitForExit(15000)) { try { p.Kill(); } catch { /* best-effort cleanup */ } return -1; }
             return p.ExitCode;
         }
         catch
