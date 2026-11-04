@@ -5,11 +5,13 @@ namespace Spectari.Ui;
 /// <summary>The main window's menu bar, drawn in the window's dark palette.</summary>
 internal static class AppMenuBar
 {
-    internal static MenuStrip Create(Action checkForUpdates, Action showReleaseNotes)
+    internal static MenuStrip Create(Action checkForUpdates, Action showReleaseNotes, Action sendFeedback)
     {
         var help = new ToolStripMenuItem("Help") { ForeColor = Fg };
         help.DropDownItems.Add(Item("Check for updates", checkForUpdates));
         help.DropDownItems.Add(Item("Release notes", showReleaseNotes));
+        help.DropDownItems.Add(new ToolStripSeparator());
+        help.DropDownItems.Add(Item("Send feedback on GitHub...", sendFeedback));
 
         var menu = new MenuStrip
         {

@@ -380,7 +380,8 @@ public sealed class MainForm : Form
         _updateFlow = new UpdateFlow(this, _streamController);
         var menuBar = AppMenuBar.Create(
             checkForUpdates: () => _ = _updateFlow.CheckNowAsync(),
-            showReleaseNotes: () => _ = _updateFlow.ShowReleaseNotesAsync());
+            showReleaseNotes: () => _ = _updateFlow.ShowReleaseNotesAsync(),
+            sendFeedback: () => FeedbackDialog.ShowFor(this));
         MainMenuStrip = menuBar;
         Controls.Add(menuBar);
         _updateBanner = new UpdateBanner(_updateFlow, menuBar);
