@@ -11,10 +11,12 @@ public sealed class UpdateCheckerTests
         string tag = "v0.23.0",
         bool prerelease = false,
         bool draft = false,
-        string assets = "") =>
+        string assets = "",
+        string? body = null) =>
         $$"""
         {
           "tag_name": "{{tag}}",
+          {{(body is null ? "" : $"\"body\": {System.Text.Json.JsonSerializer.Serialize(body)},")}}
           "draft": {{(draft ? "true" : "false")}},
           "prerelease": {{(prerelease ? "true" : "false")}},
           "assets": [{{assets}}]
@@ -38,7 +40,7 @@ public sealed class UpdateCheckerTests
     [Fact]
     public void FullReleaseSelectsTheVersionedZipWithItsDigest()
     {
-        LatestRelease? release = UpdateChecker.ParseLatestRelease(Release(assets:
+        GitHubRelease? release = UpdateChecker.ParseRelease(Release(assets:
             Asset("Spectari-v0.22.0.zip") + "," + Asset() + "," + Asset("notes.txt")));
 
         Assert.NotNull(release);
@@ -53,12 +55,56 @@ public sealed class UpdateCheckerTests
             release.Package.DownloadUri.AbsoluteUri);
     }
 
+    [Fact]
+    public void ReleaseListKeepsFullReleasesNewestFirstWithTheirNotes()
+    {
+        string json = "[" + string.Join(",",
+            Release("v0.22.0", body: "## Fixed\n- Old fix"),
+            Release("v0.24.0", prerelease: true, body: "rc"),
+            Release("v0.23.0", body: "## Added\n- New thing"),
+            Release("v0.25.0", draft: true),
+            Release("nightly")) + "]";
+
+        IReadOnlyList<GitHubRelease>? releases = UpdateChecker.ParseReleases(json);
+
+        Assert.NotNull(releases);
+        Assert.Equal(["v0.23.0", "v0.22.0"], releases.Select(r => r.Tag));
+        Assert.Equal("## Added\n- New thing", releases[0].Notes);
+        Assert.Equal("## Fixed\n- Old fix", releases[1].Notes);
+    }
+
+    [Fact]
+    public void ReleaseWithoutNotesHasEmptyNotes()
+    {
+        Assert.Equal("", UpdateChecker.ParseRelease(Release())!.Notes);
+    }
+
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("""{ "tag_name": "v0.23.0" }""")]
+    public void UnreadableReleaseListFailsTheCheck(string json)
+    {
+        Assert.Null(UpdateChecker.ParseReleases(json));
+    }
+
+    [Theory]
+    [InlineData("0.22.0+d8012be", new[] { "v0.24.0", "v0.23.0" })]
+    [InlineData("0.24.0", new string[0])]
+    [InlineData("dev", new string[0])]
+    public void NewerThanKeepsOnlyReleasesAfterTheInstalledVersion(string current, string[] expected)
+    {
+        IReadOnlyList<GitHubRelease> releases = UpdateChecker.ParseReleases("[" + string.Join(",",
+            Release("v0.24.0"), Release("v0.23.0"), Release("v0.22.0")) + "]")!;
+
+        Assert.Equal(expected, UpdateChecker.NewerThan(releases, current).Select(r => r.Tag));
+    }
+
     [Theory]
     [InlineData(true, false)]
     [InlineData(false, true)]
     public void PrereleasesAndDraftsAreNeverOffered(bool prerelease, bool draft)
     {
-        Assert.Null(UpdateChecker.ParseLatestRelease(
+        Assert.Null(UpdateChecker.ParseRelease(
             Release(prerelease: prerelease, draft: draft, assets: Asset())));
     }
 
@@ -68,18 +114,18 @@ public sealed class UpdateCheckerTests
     [InlineData("""{ "tag_name": "nightly" }""")]
     public void UnreadableReleasesFailTheCheck(string json)
     {
-        Assert.Null(UpdateChecker.ParseLatestRelease(json));
+        Assert.Null(UpdateChecker.ParseRelease(json));
     }
 
     [Fact]
     public void ReleaseWithoutAnInstallableAssetIsStillReportedButHasNoPackage()
     {
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset(digest: null)))!.Package);
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset(digest: "sha256:abc")))!.Package);
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset(digest: "md5:" + new string('a', 64))))!.Package);
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset(size: 0)))!.Package);
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset("Spectari-v0.23.0-rc.1.zip")))!.Package);
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset() + "," + Asset("Spectari-v0.23.zip")))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset(digest: null)))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset(digest: "sha256:abc")))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset(digest: "md5:" + new string('a', 64))))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset(size: 0)))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset("Spectari-v0.23.0-rc.1.zip")))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset() + "," + Asset("Spectari-v0.23.zip")))!.Package);
     }
 
     [Theory]
@@ -88,7 +134,7 @@ public sealed class UpdateCheckerTests
     [InlineData("https://example.com/Skeptic043/spectari/releases/download/v0.23.0/Spectari-v0.23.0.zip")]
     public void PackagesFromOutsideThisRepositoryOverHttpsAreRejected(string url)
     {
-        Assert.Null(UpdateChecker.ParseLatestRelease(Release(assets: Asset(url: url)))!.Package);
+        Assert.Null(UpdateChecker.ParseRelease(Release(assets: Asset(url: url)))!.Package);
     }
 
     [Theory]

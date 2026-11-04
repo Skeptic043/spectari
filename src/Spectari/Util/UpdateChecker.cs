@@ -7,16 +7,12 @@ namespace Spectari.Util;
 /// <summary>The installable zip of a release, with the checksum GitHub published for it.</summary>
 internal sealed record ReleasePackage(string AssetName, Uri DownloadUri, long Size, byte[] Sha256);
 
-/// <summary>The latest full release. Package is null when no asset can be installed safely.</summary>
-internal sealed record LatestRelease(string Tag, Version Version, ReleasePackage? Package);
+/// <summary>A full release and its notes. Package is null when no asset can be installed safely.</summary>
+internal sealed record GitHubRelease(string Tag, Version Version, string Notes, ReleasePackage? Package);
 
 /// <summary>Fail-silent lookup and pure numeric comparison for full releases.</summary>
 internal static class UpdateChecker
 {
-    private static readonly Uri LatestReleaseApiUri = new(
-        "https://api.github.com/repos/Skeptic043/spectari/releases/latest");
-    private const string DownloadUrlPrefix =
-        "https://github.com/Skeptic043/spectari/releases/download/";
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly HttpClient Client = new()
     {
@@ -25,18 +21,18 @@ internal static class UpdateChecker
     private static readonly Regex PackageAssetName = new(
         @"^Spectari-v(?<version>[^/\\]+)\.zip$", RegexOptions.CultureInvariant);
 
-    internal const string LatestReleasePageUrl =
-        "https://github.com/Skeptic043/spectari/releases/latest";
-
-    /// <summary>Makes one anonymous request. Null means the check failed.</summary>
-    internal static async Task<LatestRelease?> GetLatestReleaseAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Makes one anonymous request for the full releases, newest first. Null
+    /// means the check failed.
+    /// </summary>
+    internal static async Task<IReadOnlyList<GitHubRelease>?> GetReleasesAsync(CancellationToken cancellationToken)
     {
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(RequestTimeout);
 
-            using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseApiUri);
+            using var request = new HttpRequestMessage(HttpMethod.Get, ProjectLinks.ReleasesApi);
             request.Headers.UserAgent.ParseAdd("Spectari-update-check");
             request.Headers.Accept.ParseAdd("application/vnd.github+json");
             request.Headers.Add("X-GitHub-Api-Version", "2026-03-10");
@@ -46,7 +42,7 @@ internal static class UpdateChecker
             if (!response.IsSuccessStatusCode) return null;
 
             string body = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-            return ParseLatestRelease(body);
+            return ParseReleases(body);
         }
         catch
         {
@@ -54,44 +50,72 @@ internal static class UpdateChecker
         }
     }
 
-    /// <summary>
-    /// Reads a GitHub release object. Drafts, prereleases, and unparseable tags
-    /// yield null. The package is kept only when exactly one asset is named for
-    /// the tag's version, downloads over HTTPS from this repository, and carries
-    /// a SHA-256 digest.
-    /// </summary>
-    internal static LatestRelease? ParseLatestRelease(string json)
+    /// <summary>Reads a GitHub release list. Null when it is not a list.</summary>
+    internal static IReadOnlyList<GitHubRelease>? ParseReleases(string json)
     {
         try
         {
             using JsonDocument document = JsonDocument.Parse(json);
-            JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
-            if (IsTrue(root, "draft") || IsTrue(root, "prerelease")) return null;
-
-            string? tag = GetString(root, "tag_name");
-            Version? version = ParseVersion(tag);
-            if (tag is null || version is null) return null;
-
-            ReleasePackage? package = null;
-            int matches = 0;
-            if (root.TryGetProperty("assets", out JsonElement assets)
-                && assets.ValueKind == JsonValueKind.Array)
-            {
-                foreach (JsonElement asset in assets.EnumerateArray())
-                {
-                    if (!IsPackageAssetFor(GetString(asset, "name"), version)) continue;
-                    matches++;
-                    package = ReadPackage(asset);
-                }
-            }
-
-            return new LatestRelease(tag, version, matches == 1 ? package : null);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return null;
+            return document.RootElement.EnumerateArray()
+                .Select(ReadRelease)
+                .OfType<GitHubRelease>()
+                .OrderByDescending(release => release.Version)
+                .ToList();
         }
         catch (JsonException)
         {
             return null;
         }
+    }
+
+    /// <summary>Reads one GitHub release object; see <see cref="ReadRelease"/>.</summary>
+    internal static GitHubRelease? ParseRelease(string json)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            return ReadRelease(document.RootElement);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The releases numerically newer than the installed version, in the given order.</summary>
+    internal static IReadOnlyList<GitHubRelease> NewerThan(IEnumerable<GitHubRelease> releases, string? current) =>
+        releases.Where(release => IsRemoteVersionNewer(current, release.Tag)).ToList();
+
+    /// <summary>
+    /// Drafts, prereleases, and unparseable tags yield null. The package is
+    /// kept only when exactly one asset is named for the tag's version,
+    /// downloads over HTTPS from this repository, and carries a SHA-256 digest.
+    /// </summary>
+    private static GitHubRelease? ReadRelease(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return null;
+        if (IsTrue(root, "draft") || IsTrue(root, "prerelease")) return null;
+
+        string? tag = GetString(root, "tag_name");
+        Version? version = ParseVersion(tag);
+        if (tag is null || version is null) return null;
+
+        ReleasePackage? package = null;
+        int matches = 0;
+        if (root.TryGetProperty("assets", out JsonElement assets)
+            && assets.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement asset in assets.EnumerateArray())
+            {
+                if (!IsPackageAssetFor(GetString(asset, "name"), version)) continue;
+                matches++;
+                package = ReadPackage(asset);
+            }
+        }
+
+        string notes = GetString(root, "body") ?? "";
+        return new GitHubRelease(tag, version, notes, matches == 1 ? package : null);
     }
 
     /// <summary>True when the asset name is Spectari-vX.Y.Z.zip for exactly this version.</summary>
@@ -124,7 +148,7 @@ internal static class UpdateChecker
             && sizeElement.TryGetInt64(out long parsed) ? parsed : 0;
 
         if (name is null || sha256 is null || size <= 0
-            || url is null || !url.StartsWith(DownloadUrlPrefix, StringComparison.OrdinalIgnoreCase)
+            || url is null || !url.StartsWith(ProjectLinks.ReleaseDownloadPrefix, StringComparison.OrdinalIgnoreCase)
             || !Uri.TryCreate(url, UriKind.Absolute, out Uri? uri)
             || uri.Scheme != Uri.UriSchemeHttps)
             return null;

@@ -5,13 +5,11 @@ namespace Spectari.Ui;
 /// <summary>The main window's menu bar, drawn in the window's dark palette.</summary>
 internal static class AppMenuBar
 {
-    internal static MenuStrip Create(Action checkForUpdates)
+    internal static MenuStrip Create(Action checkForUpdates, Action showReleaseNotes)
     {
-        var checkItem = new ToolStripMenuItem("Check for updates") { ForeColor = Fg };
-        checkItem.Click += (_, _) => checkForUpdates();
-
         var help = new ToolStripMenuItem("Help") { ForeColor = Fg };
-        help.DropDownItems.Add(checkItem);
+        help.DropDownItems.Add(Item("Check for updates", checkForUpdates));
+        help.DropDownItems.Add(Item("Release notes", showReleaseNotes));
 
         var menu = new MenuStrip
         {
@@ -22,6 +20,13 @@ internal static class AppMenuBar
         };
         menu.Items.Add(help);
         return menu;
+    }
+
+    private static ToolStripMenuItem Item(string text, Action onClick)
+    {
+        var item = new ToolStripMenuItem(text) { ForeColor = Fg };
+        item.Click += (_, _) => onClick();
+        return item;
     }
 
     private sealed class DarkColors : ProfessionalColorTable

@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
@@ -47,9 +46,6 @@ public sealed class WatchForm : Form
         Visible = false,
     };
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
-
     public WatchForm(int extraPort = 8093)
     {
         _extraPort = extraPort;
@@ -88,8 +84,7 @@ public sealed class WatchForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        int on = 1;
-        _ = DwmSetWindowAttribute(Handle, 20, ref on, sizeof(int));
+        DarkTheme.UseDarkTitleBar(this);
     }
 
     private async Task InitAsync()
@@ -123,16 +118,9 @@ public sealed class WatchForm : Form
             // instead of spawning bare WebView2 popup windows.
             _web.CoreWebView2.NewWindowRequested += (_, e) =>
             {
-                // Always handle it so no bare WebView2 popup spawns; but only shell
-                // out to the default browser for a real http(s) link. A malicious
-                // grid entry could otherwise carry a file: or custom-protocol URI
-                // that UseShellExecute would launch as a local program.
+                // Always handle it so no bare WebView2 popup spawns.
                 e.Handled = true;
-                if (Uri.TryCreate(e.Uri, UriKind.Absolute, out Uri? uri)
-                    && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-                {
-                    try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(e.Uri) { UseShellExecute = true }); } catch { }
-                }
+                Browser.Open(e.Uri);
             };
             // The page's Find-streams button asks us to search (the probing
             // needs the tailscale CLI, which the page can't run).

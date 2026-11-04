@@ -3,9 +3,9 @@ using Spectari.Util;
 namespace Spectari.Ui;
 
 /// <summary>
-/// User-facing update actions: the on-demand check and the install action.
-/// InstallAsync is the one install entry point for every surface that offers
-/// an update.
+/// User-facing update actions: the on-demand check, the release notes, and the
+/// install action. InstallAsync is the one install entry point for every
+/// surface that offers an update.
 /// </summary>
 internal sealed class UpdateFlow
 {
@@ -29,36 +29,22 @@ internal sealed class UpdateFlow
         _busy = true;
         try
         {
-            LatestRelease? release;
-            _owner.UseWaitCursor = true;
-            try
-            {
-                release = await UpdateChecker.GetLatestReleaseAsync(CancellationToken.None);
-            }
-            finally
-            {
-                _owner.UseWaitCursor = false;
-            }
+            IReadOnlyList<GitHubRelease>? releases = await FetchReleasesAsync();
             if (_owner.IsDisposed) return;
-
-            string current = UpdateChecker.DisplayVersion(AppVersion.Current) ?? AppVersion.Current;
-            if (release is null)
+            if (releases is null)
             {
                 Inform("Could not check for updates. Check your internet connection and try again.",
                     MessageBoxIcon.Warning);
                 return;
             }
-            if (!UpdateChecker.IsRemoteVersionNewer(AppVersion.Current, release.Tag))
+
+            IReadOnlyList<GitHubRelease> newer = UpdateChecker.NewerThan(releases, AppVersion.Current);
+            if (newer.Count == 0)
             {
-                Inform($"Spectari is up to date ({current}).", MessageBoxIcon.Information);
+                Inform($"Spectari is up to date ({CurrentDisplayVersion}).", MessageBoxIcon.Information);
                 return;
             }
-
-            string available = UpdateChecker.DisplayVersion(release.Tag) ?? release.Tag;
-            DialogResult answer = MessageBox.Show(_owner,
-                $"Spectari {available} is available. You have {current}.\n\nInstall it now?",
-                Caption, MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-            if (answer == DialogResult.Yes) await InstallCoreAsync(release);
+            await InstallCoreAsync(newer);
         }
         catch (Exception ex)
         {
@@ -70,18 +56,26 @@ internal sealed class UpdateFlow
         }
     }
 
-    /// <summary>
-    /// Downloads, verifies, and installs the release, then relaunches on it.
-    /// A running stream is only closed after the user chooses Continue and the
-    /// download has been verified.
-    /// </summary>
-    internal async Task InstallAsync(LatestRelease release)
+    /// <summary>Shows every release's notes.</summary>
+    internal async Task ShowReleaseNotesAsync()
     {
         if (_busy) return;
         _busy = true;
         try
         {
-            await InstallCoreAsync(release);
+            IReadOnlyList<GitHubRelease>? releases = await FetchReleasesAsync();
+            if (_owner.IsDisposed) return;
+            if (releases is null)
+            {
+                Inform("Could not load the release notes. Check your internet connection and try again.",
+                    MessageBoxIcon.Warning);
+                return;
+            }
+            ReleaseNotesDialog.ShowAll(_owner, releases);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[update] showing release notes failed: {ex}");
         }
         finally
         {
@@ -89,10 +83,31 @@ internal sealed class UpdateFlow
         }
     }
 
-    private async Task InstallCoreAsync(LatestRelease release)
+    /// <summary>
+    /// Shows the notes for the missing versions, then downloads, verifies, and
+    /// installs the newest one and relaunches on it. A running stream is only
+    /// closed after the user confirms and the download has been verified.
+    /// </summary>
+    /// <param name="newer">Releases newer than the running build, newest first.</param>
+    internal async Task InstallAsync(IReadOnlyList<GitHubRelease> newer)
     {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await InstallCoreAsync(newer);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task InstallCoreAsync(IReadOnlyList<GitHubRelease> newer)
+    {
+        GitHubRelease release = newer[0];
         string version = UpdateChecker.DisplayVersion(release.Tag) ?? release.Tag;
-        string current = UpdateChecker.DisplayVersion(AppVersion.Current) ?? AppVersion.Current;
+        string current = CurrentDisplayVersion;
 
         if (release.Package is not { } package)
         {
@@ -110,7 +125,7 @@ internal sealed class UpdateFlow
             return;
         }
 
-        if (!_streams.IsIdleSurface && !ConfirmCloseStream()) return;
+        if (!ReleaseNotesDialog.ConfirmInstall(_owner, newer, current, streaming: !_streams.IsIdleSurface)) return;
 
         using var dialog = new UpdateProgressDialog($"Updating to Spectari {version}", async (progressDialog, ct) =>
         {
@@ -177,23 +192,6 @@ internal sealed class UpdateFlow
         Application.Exit();
     }
 
-    private bool ConfirmCloseStream()
-    {
-        var continueButton = new TaskDialogButton("Continue");
-        var stopButton = new TaskDialogButton("Stop");
-        var page = new TaskDialogPage
-        {
-            Caption = Caption,
-            Heading = "Updating will close your stream.",
-            Text = "Continue closes the stream and installs the update. Stop keeps the stream running and does not update.",
-            Icon = TaskDialogIcon.Warning,
-            AllowCancel = true,
-            Buttons = { continueButton, stopButton },
-            DefaultButton = stopButton,
-        };
-        return TaskDialog.ShowDialog(_owner, page) == continueButton;
-    }
-
     private void OpenReleasePage(string message)
     {
         Inform(message, MessageBoxIcon.Information);
@@ -201,19 +199,21 @@ internal sealed class UpdateFlow
     }
 
     /// <summary>Opens the latest release page in the default browser.</summary>
-    internal static void OpenReleasePage()
+    internal static void OpenReleasePage() => Browser.Open(ProjectLinks.LatestReleasePage);
+
+    private static string CurrentDisplayVersion =>
+        UpdateChecker.DisplayVersion(AppVersion.Current) ?? AppVersion.Current;
+
+    private async Task<IReadOnlyList<GitHubRelease>?> FetchReleasesAsync()
     {
+        _owner.UseWaitCursor = true;
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = UpdateChecker.LatestReleasePageUrl,
-                UseShellExecute = true,
-            });
+            return await UpdateChecker.GetReleasesAsync(CancellationToken.None);
         }
-        catch (Exception ex)
+        finally
         {
-            Console.Error.WriteLine($"[update] could not open the release page: {ex.Message}");
+            _owner.UseWaitCursor = false;
         }
     }
 

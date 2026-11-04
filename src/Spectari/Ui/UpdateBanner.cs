@@ -17,7 +17,7 @@ internal sealed class UpdateBanner : Panel
     private readonly Control _above;
     private readonly CancellationTokenSource _checkCts = new();
     private readonly Label _message = new() { AutoSize = true, ForeColor = Fg, Anchor = AnchorStyles.Left };
-    private LatestRelease? _release;
+    private IReadOnlyList<GitHubRelease>? _newer;
     private string? _skippedVersion;
 
     /// <summary>Raised after the user dismisses the bar, so the dismissal can be saved.</summary>
@@ -76,13 +76,14 @@ internal sealed class UpdateBanner : Panel
         try
         {
             CancellationToken token = _checkCts.Token;
-            LatestRelease? release = await UpdateChecker.GetLatestReleaseAsync(token);
-            if (release is null || token.IsCancellationRequested || IsDisposed || Disposing
-                || !UpdateChecker.ShouldOffer(AppVersion.Current, release.Tag, _skippedVersion))
+            IReadOnlyList<GitHubRelease>? releases = await UpdateChecker.GetReleasesAsync(token);
+            if (releases is null || token.IsCancellationRequested || IsDisposed || Disposing) return;
+            IReadOnlyList<GitHubRelease> newer = UpdateChecker.NewerThan(releases, AppVersion.Current);
+            if (newer.Count == 0 || !UpdateChecker.ShouldOffer(AppVersion.Current, newer[0].Tag, _skippedVersion))
                 return;
 
-            _release = release;
-            _message.Text = $"Spectari {UpdateChecker.DisplayVersion(release.Tag)} is available.";
+            _newer = newer;
+            _message.Text = $"Spectari {UpdateChecker.DisplayVersion(newer[0].Tag)} is available.";
             Place();
             BringToFront();
             Visible = true;
@@ -111,10 +112,10 @@ internal sealed class UpdateBanner : Panel
 
     private async Task InstallAsync()
     {
-        if (_release is not { } release) return;
+        if (_newer is not { } newer) return;
         try
         {
-            await _updateFlow.InstallAsync(release);
+            await _updateFlow.InstallAsync(newer);
         }
         catch (Exception ex)
         {
@@ -124,8 +125,8 @@ internal sealed class UpdateBanner : Panel
 
     private void Dismiss()
     {
-        if (_release is null) return;
-        SkippedVersion = _release.Tag;
+        if (_newer is null) return;
+        SkippedVersion = _newer[0].Tag;
         Visible = false;
         Dismissed?.Invoke();
     }

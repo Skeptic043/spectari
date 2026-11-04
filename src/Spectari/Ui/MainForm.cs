@@ -185,9 +185,6 @@ public sealed class MainForm : Form
     // valid; a failed start keeps it too, since no stream ever served it.
     private string _pendingKey = SessionConfig.NewViewKey();
 
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
-
     // A picked window can close before the stream launches (right after the Switch
     // dialog's OK, or the main selection went stale). Validate the handle at the
     // start boundary so the session doesn't hand a dead HWND to the capture backend.
@@ -350,7 +347,7 @@ public sealed class MainForm : Form
         _presetCombo.SelectedIndex = DefaultPresetIndex;
         PopulateEncoderChoices();
 
-        ApplyDarkTheme(this);
+        DarkTheme.Apply(this);
         _startButton.BackColor = AccentDark;
         _logBox.BackColor = Color.FromArgb(16, 18, 21);
         _logBox.ForeColor = Color.Gainsboro;
@@ -381,7 +378,9 @@ public sealed class MainForm : Form
         _streamController.StateChanged += RenderStreamState;
         _streamController.SessionStarted += RenderStartedStream;
         _updateFlow = new UpdateFlow(this, _streamController);
-        var menuBar = AppMenuBar.Create(() => _ = _updateFlow.CheckNowAsync());
+        var menuBar = AppMenuBar.Create(
+            checkForUpdates: () => _ = _updateFlow.CheckNowAsync(),
+            showReleaseNotes: () => _ = _updateFlow.ShowReleaseNotesAsync());
         MainMenuStrip = menuBar;
         Controls.Add(menuBar);
         _updateBanner = new UpdateBanner(_updateFlow, menuBar);
@@ -544,8 +543,7 @@ public sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        int on = 1;
-        _ = DwmSetWindowAttribute(Handle, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref on, sizeof(int));
+        DarkTheme.UseDarkTitleBar(this);
         _uiHangWatchdog ??= new UiHangWatchdog(this, _idlePreviewCapture.GetProgressSnapshot);
     }
 
@@ -558,39 +556,6 @@ public sealed class MainForm : Form
         ForeColor = Dim,
         BackColor = Bg,
     };
-
-    private static void ApplyDarkTheme(Control root)
-    {
-        foreach (Control c in root.Controls)
-        {
-            switch (c)
-            {
-                case Button b:
-                    b.FlatStyle = FlatStyle.Flat;
-                    b.FlatAppearance.BorderColor = Border;
-                    b.BackColor = Card;
-                    b.ForeColor = Fg;
-                    break;
-                case ComboBox cb:
-                    cb.BackColor = Card;
-                    cb.ForeColor = Fg;
-                    break;
-                case NumericUpDown n:
-                    n.BackColor = Card;
-                    n.ForeColor = Fg;
-                    n.BorderStyle = BorderStyle.FixedSingle;
-                    break;
-                case CheckBox or RadioButton:
-                    c.ForeColor = Fg;
-                    break;
-                case TextBox t:
-                    t.BackColor = Card;
-                    t.ForeColor = Fg;
-                    break;
-            }
-            if (c.HasChildren) ApplyDarkTheme(c);
-        }
-    }
 
     /// <summary>Bring the panel back to the user (un-minimize, raise, focus).
     /// AppRunContext calls this when a second launch broadcasts
@@ -1118,7 +1083,7 @@ public sealed class MainForm : Form
             BackColor = Bg,
             ForeColor = Fg,
         };
-        dlg.HandleCreated += (_, _) => { int on = 1; _ = DwmSetWindowAttribute(dlg.Handle, 20, ref on, sizeof(int)); };
+        dlg.HandleCreated += (_, _) => DarkTheme.UseDarkTitleBar(dlg);
 
         var rbWin = new RadioButton { Text = "Game / window", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Window };
         var rbMon = new RadioButton { Text = "Monitor", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Monitor };
@@ -1260,7 +1225,7 @@ public sealed class MainForm : Form
         dlg.Controls.Add(grid);
         dlg.AcceptButton = ok;
         dlg.CancelButton = cancel;
-        ApplyDarkTheme(dlg);
+        DarkTheme.Apply(dlg);
         ok.BackColor = AccentDark;
 
         void RenderDialogCaptureDeviceRow()
