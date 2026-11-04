@@ -66,6 +66,7 @@ internal sealed class BackgroundLogWriter
     private readonly BlockingCollection<(string Time, string Line)> _queue = new(QueueLimit);
     private readonly LogFileSink _sink;
     private readonly ManualResetEventSlim _idle = new(true);
+    private int _pending;
     private int _dropped;
 
     internal BackgroundLogWriter(LogFileSink sink)
@@ -76,8 +77,12 @@ internal sealed class BackgroundLogWriter
 
     internal void Enqueue(string line)
     {
-        _idle.Reset();
-        if (!_queue.TryAdd((DateTime.Now.ToString("HH:mm:ss"), line))) Interlocked.Increment(ref _dropped);
+        // Counted before the add, so Drain cannot see "idle" while a line is
+        // between the caller and the queue.
+        if (Interlocked.Increment(ref _pending) == 1) _idle.Reset();
+        if (_queue.TryAdd((DateTime.Now.ToString("HH:mm:ss"), line))) return;
+        Interlocked.Increment(ref _dropped);
+        if (Interlocked.Decrement(ref _pending) == 0) _idle.Set();
     }
 
     /// <summary>Waits briefly for queued lines to reach the file (exit and crash paths).</summary>
@@ -92,15 +97,15 @@ internal sealed class BackgroundLogWriter
                 int dropped = Interlocked.Exchange(ref _dropped, 0);
                 if (dropped > 0) _sink.Write(time, $"[log] {dropped} lines were dropped because logging fell behind");
                 _sink.Write(time, line);
-                if (_queue.Count == 0)
-                {
-                    _sink.Flush(time);
-                    _idle.Set();
-                }
+                if (_queue.Count == 0) _sink.Flush(time);
             }
             catch
             {
                 // The log file is best-effort diagnostics; a failed write must not stop the app.
+            }
+            finally
+            {
+                if (Interlocked.Decrement(ref _pending) == 0) _idle.Set();
             }
         }
     }
