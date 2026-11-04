@@ -169,12 +169,6 @@ if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
   video.requestVideoFrameCallback(countPresented);
 }
 
-// Page compositor rate (rAF ticks/sec). If this reads ~25-30 instead of your
-// monitor's refresh rate, the browser is compositing in software - a browser
-// settings problem (hardware acceleration), not a stream problem.
-const raf = { count: 0, last: 0, fps: 0 };
-(function rafLoop() { raf.count++; requestAnimationFrame(rafLoop); })();
-setInterval(() => { raf.fps = raf.count - raf.last; raf.last = raf.count; }, 1000);
 if (params.get("stats") === "1") {
   statsEl.classList.add("show");
   badge.classList.add("stats-open");
@@ -381,7 +375,6 @@ setInterval(() => {
   statsEl.textContent =
     `stream   ${video.videoWidth}x${video.videoHeight}@${hello ? hello.fps : "?"}\n` +
     `fps      sent ${stat.sentFps} · received ${stat.receivedFps} · shown ${stat.shownFps}\n` +
-    `page     ${raf.fps} fps (compositor)\n` +
     `dropped  ${stat.dropWindow} last 1s\n` +
     (network === null
       ? `delay    measuring…\n  buffer ${buffer} ms\n`
