@@ -26,6 +26,7 @@ internal static class StreamOptions
 
     internal static readonly Preset[] Presets =
     [
+        new("480p · 30 fps", 480, 30),
         new("720p · 30 fps", 720, 30),
         new("720p · 60 fps", 720, 60),
         new("1080p · 30 fps", 1080, 30),

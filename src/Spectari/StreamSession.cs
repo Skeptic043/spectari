@@ -581,7 +581,8 @@ public sealed class StreamSession
     public static (int Low, int Medium, int High) BitrateTiers(int width, int height, int fps)
     {
         long px = (long)width * height;
-        var (lo, med, hi) = px <= 1_400_000 ? (4000, 6000, 8000)        // 720p-class
+        var (lo, med, hi) = px <= 500_000 ? (1500, 2500, 3500)        // 480p-class
+                          : px <= 1_400_000 ? (4000, 6000, 8000)        // 720p-class
                           : px <= 2_900_000 ? (8000, 12000, 16000)      // 1080p-class
                           : px <= 5_500_000 ? (12000, 18000, 24000)     // 1440p-class
                           : (18000, 25000, 35000);                      // 4K-class
