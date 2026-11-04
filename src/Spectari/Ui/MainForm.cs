@@ -5,6 +5,8 @@ using Spectari.Capture;
 using Spectari.Server;
 using Spectari.Util;
 using static Spectari.Ui.Palette;
+using static Spectari.Ui.SourcePickers;
+using static Spectari.Ui.StreamOptions;
 
 namespace Spectari.Ui;
 
@@ -22,50 +24,6 @@ public sealed class MainForm : Form
     // One deliberate exception (v0.15, user request): while LIVE, the pickers
     // that only take effect through a restart are disabled - the dimming is
     // the point, it funnels changes through the Switch source button.
-
-    // Presets are the TARGET output (resolution + fps); the bitrate lives in its
-    // own Low/Medium/High dropdown whose numbers repopulate from the preset and
-    // the selected source, so the streamer always sees the real Mbps before
-    // starting. Height 0 = Native: the label gets rewritten with the selected
-    // source's actual size (UpdateNativePresetLabel).
-    private sealed record Preset(string Label, int Height, int Fps)
-    {
-        public override string ToString() => Label;
-    }
-
-    private static readonly Preset[] Presets =
-    [
-        new("720p · 30 fps", 720, 30),
-        new("720p · 60 fps", 720, 60),
-        new("1080p · 30 fps", 1080, 30),
-        new("1080p · 60 fps", 1080, 60),
-        new("1440p · 30 fps", 1440, 30),
-        new("1440p · 60 fps", 1440, 60),
-        new("Native · 30 fps", 0, 30),
-        new("Native · 60 fps", 0, 60),
-    ];
-
-    private sealed record BitrateChoice(string Label, int Kbps, string Tier)
-    {
-        public override string ToString() => Label;
-    }
-
-    private sealed record EncoderChoice(string Label, string Value)
-    {
-        public override string ToString() => Label;
-    }
-
-    private static readonly EncoderChoice[] Encoders =
-    [
-        new("Auto (recommended)", "auto"),
-        new("NVIDIA (NVENC)", "h264_nvenc"),
-        new("AMD (AMF)", "h264_amf"),
-        new("Intel (QSV)", "h264_qsv"),
-        new("CPU (x264)", "libx264"),
-    ];
-
-    private static readonly int DefaultPresetIndex =
-        Array.FindIndex(Presets, p => p.Height == 1080 && p.Fps == 60);
 
     private sealed class AppSettings
     {
@@ -100,7 +58,6 @@ public sealed class MainForm : Form
 
     private static readonly string SettingsPath = AppPaths.SettingsFile;
     private const int SourceGroupExpandedHeight = 170;
-    private const int SwitchDialogExpandedHeight = 306;
 
     private readonly GroupBox _sourceGroup;
     private readonly RadioButton _rbWindow = new() { Text = "Game / window", Checked = true, AutoSize = true };
@@ -829,9 +786,6 @@ public sealed class MainForm : Form
         _sourceGroup.ResumeLayout(performLayout: true);
     }
 
-    private static int PickerRowHeight(ComboBox combo) =>
-        combo.PreferredHeight + combo.Margin.Vertical;
-
     private void PopulateMonitors()
     {
         using IDisposable? operation = _uiHangWatchdog?.TrackOperation("monitor source repopulation");
@@ -873,39 +827,11 @@ public sealed class MainForm : Form
         RenderAudioPicker(_sourceSelection, _audioCombo);
     }
 
-    private static void RenderSourcePickers(
-        SourceSelectionModel sourceSelection,
-        ComboBox windowCombo,
-        ComboBox monitorCombo,
-        ComboBox captureDeviceCombo,
-        ComboBox audioCombo)
-    {
-        RenderPicker(windowCombo, sourceSelection.WindowDisplayItems, sourceSelection.SelectedWindowIndex);
-        RenderPicker(monitorCombo, sourceSelection.MonitorDisplayItems, sourceSelection.SelectedMonitorIndex);
-        RenderPicker(
-            captureDeviceCombo,
-            sourceSelection.CaptureDeviceDisplayItems,
-            sourceSelection.SelectedCaptureDeviceIndex);
-        RenderAudioPicker(sourceSelection, audioCombo);
-    }
-
     private void RenderMainSourceKind()
     {
         _rbWindow.Checked = _sourceSelection.Kind == SourceKind.Window;
         _rbMonitor.Checked = _sourceSelection.Kind == SourceKind.Monitor;
         _rbCaptureDevice.Checked = _sourceSelection.Kind == SourceKind.CaptureDevice;
-    }
-
-    private static void RenderAudioPicker(SourceSelectionModel sourceSelection, ComboBox audioCombo) =>
-        RenderPicker(audioCombo, sourceSelection.AudioDisplayItems, sourceSelection.SelectedAudioIndex);
-
-    private static void RenderPicker(ComboBox combo, IReadOnlyList<string> items, int selectedIndex)
-    {
-        combo.BeginUpdate();
-        combo.Items.Clear();
-        foreach (string item in items) combo.Items.Add(item);
-        combo.SelectedIndex = selectedIndex >= 0 && selectedIndex < items.Count ? selectedIndex : -1;
-        combo.EndUpdate();
     }
 
     private async Task StartStreamAsync()
@@ -1059,10 +985,9 @@ public sealed class MainForm : Form
         ResumeIdlePreview();
     }
 
-    /// <summary>Guided switch: a small popup with the source, preset, bitrate,
-    /// encoder, and audio pickers, prefilled from the current selections. OK writes the
-    /// choices back to the main controls and goes through the normal switch
-    /// (or plain start when idle), so both paths stay one code path.</summary>
+    /// <summary>Opens the Switch source dialog. OK writes the choices back to
+    /// the main controls and goes through the normal switch (or plain start
+    /// when idle), so both paths stay one code path.</summary>
     private async void ShowSwitchDialog()
     {
         if (_streamController.IsStopping) return;
@@ -1070,226 +995,15 @@ public sealed class MainForm : Form
         SourceSelectionModel dialogSources;
         using (_uiHangWatchdog?.TrackOperation("source dialog repopulation"))
             dialogSources = _sourceSelection.CreateFreshSnapshot();
-        bool showCaptureDeviceRow = dialogSources.CaptureDevices.Count > 0;
 
-        using var dlg = new Form
-        {
-            Text = "Switch source",
-            FormBorderStyle = FormBorderStyle.FixedDialog,
-            MinimizeBox = false,
-            MaximizeBox = false,
-            ShowInTaskbar = false,
-            StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(480, SwitchDialogExpandedHeight),
-            BackColor = Bg,
-            ForeColor = Fg,
-        };
-        dlg.HandleCreated += (_, _) => DarkTheme.UseDarkTitleBar(dlg);
-
-        var rbWin = new RadioButton { Text = "Game / window", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Window };
-        var rbMon = new RadioButton { Text = "Monitor", AutoSize = true, Checked = dialogSources.Kind == SourceKind.Monitor };
-        using var rbCaptureDevice = new RadioButton
-        {
-            Text = "Capture device",
-            AutoSize = true,
-            Checked = showCaptureDeviceRow && dialogSources.Kind == SourceKind.CaptureDevice,
-            Visible = showCaptureDeviceRow,
-        };
-        var winCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
-        var monCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
-        using var captureDeviceCombo = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 330,
-            FlatStyle = FlatStyle.Flat,
-            Visible = showCaptureDeviceRow,
-        };
-        var presetCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300, FlatStyle = FlatStyle.Flat };
-        var bitrateCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
-        var encoderCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, FlatStyle = FlatStyle.Flat };
-        var audioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
-
-        RenderSourcePickers(dialogSources, winCombo, monCombo, captureDeviceCombo, audioCombo);
-        foreach (object it in _presetCombo.Items) presetCombo.Items.Add(it);
-        foreach (object it in _encoderCombo.Items) encoderCombo.Items.Add(it);
-        presetCombo.SelectedIndex = _presetCombo.SelectedIndex;
-        encoderCombo.SelectedIndex = _encoderCombo.SelectedIndex;
-        // Refresh the dialog's Native labels and bitrate choices from one immutable
-        // enumerated size snapshot, matching the main controls.
-        bool refreshingDlgSourceOptions = false;
-        void RefreshDlgSourceOptions()
-        {
-            if (refreshingDlgSourceOptions) return;
-            refreshingDlgSourceOptions = true;
-            try
-            {
-                var sourceSize = dialogSources.SelectedSourceSize;
-                for (int idx = 0; idx < Presets.Length && idx < presetCombo.Items.Count; idx++)
-                {
-                    if (Presets[idx].Height != 0) continue;
-                    string label = ComputeNativeLabel(Presets[idx].Fps, sourceSize);
-                    if (presetCombo.Items[idx] is Preset current && current.Label == label) continue;
-                    int sel = presetCombo.SelectedIndex;
-                    presetCombo.Items[idx] = Presets[idx] with { Label = label };
-                    presetCombo.SelectedIndex = sel;
-                }
-
-                if (presetCombo.SelectedItem is not Preset p) return;
-                string keep = (bitrateCombo.SelectedItem as BitrateChoice)?.Tier
-                              ?? (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med";
-                var choices = BuildBitrateChoices(p, sourceSize);
-                bitrateCombo.BeginUpdate();
-                bitrateCombo.Items.Clear();
-                foreach (var c in choices) bitrateCombo.Items.Add(c);
-                bitrateCombo.EndUpdate();
-                int i = choices.FindIndex(c => c.Tier == keep);
-                bitrateCombo.SelectedIndex = i >= 0 ? i : 1;
-            }
-            finally
-            {
-                refreshingDlgSourceOptions = false;
-            }
-        }
-        void SelectDialogKind(SourceKind kind, RadioButton radio)
-        {
-            if (!radio.Checked) return;
-            dialogSources.SelectKind(kind);
-            RenderAudioPicker(dialogSources, audioCombo);
-            RefreshDlgSourceOptions();
-        }
-        rbWin.CheckedChanged += (_, _) => SelectDialogKind(SourceKind.Window, rbWin);
-        rbMon.CheckedChanged += (_, _) => SelectDialogKind(SourceKind.Monitor, rbMon);
-        rbCaptureDevice.CheckedChanged += (_, _) =>
-            SelectDialogKind(SourceKind.CaptureDevice, rbCaptureDevice);
-        winCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
-        winCombo.SelectionChangeCommitted += (_, _) =>
-        {
-            if (dialogSources.SelectWindowIndex(winCombo.SelectedIndex))
-                RefreshDlgSourceOptions();
-        };
-        monCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
-        monCombo.SelectionChangeCommitted += (_, _) =>
-        {
-            if (dialogSources.SelectMonitorIndex(monCombo.SelectedIndex))
-                RefreshDlgSourceOptions();
-        };
-        captureDeviceCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
-        captureDeviceCombo.SelectionChangeCommitted += (_, _) =>
-        {
-            if (dialogSources.SelectCaptureDeviceIndex(captureDeviceCombo.SelectedIndex))
-            {
-                RenderAudioPicker(dialogSources, audioCombo);
-                RefreshDlgSourceOptions();
-            }
-        };
-        audioCombo.SelectionChangeCommitted += (_, _) =>
-            dialogSources.SelectAudioIndex(audioCombo.SelectedIndex);
-        presetCombo.SelectedIndexChanged += (_, _) => RefreshDlgSourceOptions();
-        RefreshDlgSourceOptions();
-
-        var grid = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            RowCount = 8,
-            Padding = new Padding(10),
-        };
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int index = 0; index < 7; index++)
-            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        int row = 0;
-        grid.Controls.Add(rbWin, 0, row);
-        grid.Controls.Add(winCombo, 1, row++);
-        grid.Controls.Add(rbMon, 0, row);
-        grid.Controls.Add(monCombo, 1, row++);
-        int captureDeviceRow = row;
-        grid.Controls.Add(rbCaptureDevice, 0, row);
-        grid.Controls.Add(captureDeviceCombo, 1, row++);
-        grid.Controls.Add(new Label { Text = "Audio:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
-        grid.Controls.Add(audioCombo, 1, row++);
-        grid.Controls.Add(new Label { Text = "Preset:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
-        grid.Controls.Add(presetCombo, 1, row++);
-        grid.Controls.Add(new Label { Text = "Bitrate:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
-        grid.Controls.Add(bitrateCombo, 1, row++);
-        grid.Controls.Add(new Label { Text = "Encoder:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, row);
-        grid.Controls.Add(encoderCombo, 1, row++);
-
-        var ok = new Button { Text = _streamController.HasSession ? "Switch" : "Start", Width = 96, Height = 28, DialogResult = DialogResult.OK };
-        var cancel = new Button { Text = "Cancel", Width = 80, Height = 28, DialogResult = DialogResult.Cancel };
-        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.RightToLeft, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 0) };
-        buttons.Controls.Add(cancel);
-        buttons.Controls.Add(ok);
-        grid.SetColumnSpan(buttons, 2);
-        grid.Controls.Add(buttons, 0, row);
-        dlg.Controls.Add(grid);
-        dlg.AcceptButton = ok;
-        dlg.CancelButton = cancel;
-        DarkTheme.Apply(dlg);
-        ok.BackColor = AccentDark;
-
-        void RenderDialogCaptureDeviceRow()
-        {
-            bool visible = dialogSources.CaptureDevices.Count > 0;
-            rbWin.Checked = dialogSources.Kind == SourceKind.Window;
-            rbMon.Checked = dialogSources.Kind == SourceKind.Monitor;
-            rbCaptureDevice.Checked = visible && dialogSources.Kind == SourceKind.CaptureDevice;
-            grid.SuspendLayout();
-            rbCaptureDevice.Visible = visible;
-            captureDeviceCombo.Visible = visible;
-            RowStyle rowStyle = grid.RowStyles[captureDeviceRow];
-            rowStyle.SizeType = visible ? SizeType.AutoSize : SizeType.Absolute;
-            rowStyle.Height = 0;
-            dlg.ClientSize = new Size(
-                480,
-                SwitchDialogExpandedHeight - (visible ? 0 : PickerRowHeight(captureDeviceCombo)));
-            grid.ResumeLayout(performLayout: true);
-        }
-
-        void RefreshDialogCaptureDevices(IReadOnlyList<CaptureDeviceDescription> devices)
-        {
-            if (dlg.IsDisposed || dlg.Disposing) return;
-            dialogSources.RefreshCaptureDevices(devices);
-            RenderPicker(
-                captureDeviceCombo,
-                dialogSources.CaptureDeviceDisplayItems,
-                dialogSources.SelectedCaptureDeviceIndex);
-            RenderDialogCaptureDeviceRow();
-            RefreshDlgSourceOptions();
-        }
-
-        RenderDialogCaptureDeviceRow();
-
-        var completion = new TaskCompletionSource<DialogResult>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        void Complete(DialogResult result)
-        {
-            if (!completion.TrySetResult(result)) return;
-            dlg.Hide();
-        }
-        ok.Click += (_, _) => Complete(DialogResult.OK);
-        cancel.Click += (_, _) => Complete(DialogResult.Cancel);
-        dlg.FormClosing += (_, e) =>
-        {
-            e.Cancel = true;
-            Complete(DialogResult.Cancel);
-        };
-
-        DialogResult result;
-        _captureDeviceChanges.DevicesChanged += RefreshDialogCaptureDevices;
-        try
-        {
-            this.Enabled = false;
-            dlg.Show(this);
-            result = await completion.Task;
-        }
-        finally
-        {
-            _captureDeviceChanges.DevicesChanged -= RefreshDialogCaptureDevices;
-            this.Enabled = true;
-        }
-        if (result != DialogResult.OK) return;
+        using var dialog = new SwitchSourceDialog(
+            dialogSources,
+            _presetCombo.Items.Cast<object>().ToArray(), _presetCombo.SelectedIndex,
+            _encoderCombo.Items.Cast<object>().ToArray(), _encoderCombo.SelectedIndex,
+            (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier,
+            _streamController.HasSession,
+            _captureDeviceChanges);
+        if (await dialog.ShowAsync(this) is not { } choice) return;
 
         // The dialog has only held descriptions so far. Release any idle capture
         // source before its accepted pick is applied to the main controls and
@@ -1335,11 +1049,11 @@ public sealed class MainForm : Form
             _monitorCombo,
             _captureDeviceCombo,
             _audioCombo);
-        if (presetCombo.SelectedIndex >= 0) _presetCombo.SelectedIndex = presetCombo.SelectedIndex;
-        if (encoderCombo.SelectedIndex >= 0) _encoderCombo.SelectedIndex = encoderCombo.SelectedIndex;
+        if (choice.PresetIndex >= 0) _presetCombo.SelectedIndex = choice.PresetIndex;
+        if (choice.EncoderIndex >= 0) _encoderCombo.SelectedIndex = choice.EncoderIndex;
         // Writing the source/preset back above repopulated the main bitrate combo;
         // now apply the tier the user picked in the dialog.
-        if ((bitrateCombo.SelectedItem as BitrateChoice)?.Tier is { } tier)
+        if (choice.BitrateTier is { } tier)
         {
             int mi = -1;
             for (int j = 0; j < _bitrateCombo.Items.Count; j++)
@@ -1532,12 +1246,6 @@ public sealed class MainForm : Form
         }
     }
 
-    private static string ComputeNativeLabel(int fps, (int W, int H) sourceSize)
-    {
-        var (w, h) = sourceSize;
-        return w > 0 && h > 0 ? $"Native · {fps} fps  ({w}x{h})" : $"Native · {fps} fps  (source size)";
-    }
-
     /// <summary>While live, the pickers that only take effect through a restart
     /// are locked so Switch source is the obvious path. Name and port stay
     /// editable because they are read at the next start.</summary>
@@ -1558,26 +1266,6 @@ public sealed class MainForm : Form
         _encoderCombo.Enabled = on;
         _audioCombo.Enabled = on;
     }
-
-    /// <summary>The Low/Medium/High options for a preset applied to a source:
-    /// the numbers come from the actual output size (pixel area, so a tall
-    /// portrait window is billed by its real pixel count, not its height).</summary>
-    private static List<BitrateChoice> BuildBitrateChoices(Preset preset, (int W, int H) sourceSize)
-    {
-        var (srcW, srcH) = sourceSize;
-        if (srcH <= 0) (srcW, srcH) = (1920, 1080); // nothing resolved yet
-        int outH = preset.Height > 0 && preset.Height < srcH ? preset.Height : srcH;
-        int outW = (int)Math.Round((double)srcW * outH / srcH);
-        var t = StreamSession.BitrateTiers(outW, outH, preset.Fps);
-        return
-        [
-            new BitrateChoice($"Low · {Mb(t.Low)} Mbps", t.Low, "low"),
-            new BitrateChoice($"Medium · {Mb(t.Medium)} Mbps", t.Medium, "med"),
-            new BitrateChoice($"High · {Mb(t.High)} Mbps", t.High, "high"),
-        ];
-    }
-
-    private static string Mb(int kbps) => kbps % 1000 == 0 ? (kbps / 1000).ToString() : (kbps / 1000.0).ToString("0.#");
 
     /// <summary>Refills the bitrate dropdown for the current preset + source,
     /// keeping the chosen tier (Low/Medium/High) across refills.</summary>
