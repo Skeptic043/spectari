@@ -8,8 +8,8 @@ namespace Spectari.Ui;
 internal sealed record SettingsActions(Action<int, bool> OpenPort, Action CopyLog, Action OpenLogs);
 
 /// <summary>
-/// The set-and-forget options: stream name, port, viewer access, encoder,
-/// update checks, and logs. Edits a copy of the settings; Save returns it.
+/// The set-and-forget options: stream name, port, viewer access, Tailscale,
+/// encoder, update checks, and logs. Edits a copy of the settings; Save returns it.
 /// </summary>
 internal sealed class SettingsDialog : Form
 {
@@ -28,6 +28,16 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _allowLan = new() { Text = "Allow LAN viewers", AutoSize = true, Margin = new Padding(8, 6, 0, 0) };
     private readonly Button _openPort = new() { Text = "Open port", AutoSize = true, MinimumSize = new Size(90, 28) };
     private readonly CheckBox _checkUpdates = new() { Text = "Check for updates when Spectari starts", AutoSize = true };
+    private readonly Label _tailscaleStatus = new() { Text = "Checking...", AutoSize = true, Margin = new Padding(3, 8, 8, 0) };
+    private readonly Button _tailscaleAction = new() { AutoSize = true, MinimumSize = new Size(90, 28), Visible = false };
+    private readonly Button _tailscaleRecheck = new() { Text = "Check again", AutoSize = true, MinimumSize = new Size(90, 28) };
+    private readonly Label _tailscaleSteps = new()
+    {
+        AutoSize = true, MaximumSize = new Size(360, 0), ForeColor = Dim, Margin = new Padding(3, 0, 3, 6), Visible = false,
+        Text = "On the Tailscale page, find this PC, open its menu, choose Share, and send the invite link " +
+            "to your viewer. They sign in with their own free Tailscale account.",
+    };
+    private Action _tailscaleNextStep = () => { };
     private readonly TableLayoutPanel _grid = new()
     {
         Dock = DockStyle.Fill, ColumnCount = 2, AutoSize = true, Padding = new Padding(4),
@@ -74,6 +84,8 @@ internal sealed class SettingsDialog : Form
         AddRow("Encoder:", _encoder);
         AddRow("Viewer access:", Flow(_openPort, _allowLan));
         AddNote("Open port asks for administrator approval once and lets Tailscale viewers reach this port, plus LAN viewers if allowed.");
+        AddRow("Tailscale:", Flow(_tailscaleStatus, _tailscaleAction, _tailscaleRecheck));
+        _grid.Controls.Add(_tailscaleSteps, 1, _row++);
         AddRow("Updates:", _checkUpdates);
         var openLogs = new Button { Text = "Open logs", AutoSize = true, MinimumSize = new Size(90, 28) };
         var copyLog = new Button { Text = "Copy log", AutoSize = true, MinimumSize = new Size(90, 28) };
@@ -103,6 +115,9 @@ internal sealed class SettingsDialog : Form
             if (!_accessBusy) actions.OpenPort((int)_port.Value, _allowLan.Checked);
         };
         openLogs.Click += (_, _) => actions.OpenLogs();
+        _tailscaleAction.Click += (_, _) => _tailscaleNextStep();
+        _tailscaleRecheck.Click += async (_, _) => await RefreshTailscaleAsync();
+        Shown += async (_, _) => await RefreshTailscaleAsync();
         copyLog.Click += (_, _) => actions.CopyLog();
         _hostAccess.SetupStarted += OnSetupStarted;
         _hostAccess.SetupCompleted += OnSetupCompleted;
@@ -111,6 +126,29 @@ internal sealed class SettingsDialog : Form
             _hostAccess.SetupStarted -= OnSetupStarted;
             _hostAccess.SetupCompleted -= OnSetupCompleted;
         };
+    }
+
+    private async Task RefreshTailscaleAsync()
+    {
+        _tailscaleStatus.Text = "Checking...";
+        TailscaleState state = await Task.Run(TailscaleStatus.Read);
+        if (IsDisposed) return;
+
+        (string status, string action, Action next) = state.Stage switch
+        {
+            TailscaleStage.NotInstalled => ("Not installed.", "Download Tailscale",
+                (Action)(() => Browser.Open(TailscaleStatus.DownloadPage))),
+            TailscaleStage.NotRunning => ("Installed, but not running.", "Open Tailscale", TailscaleStatus.OpenApp),
+            TailscaleStage.SignedOut => ("Signed out.", "Sign in", TailscaleStatus.OpenApp),
+            TailscaleStage.Disconnected => ("Signed in, but disconnected.", "Connect", TailscaleStatus.OpenApp),
+            _ => ($"Connected as {state.MachineName ?? "this PC"}.", "Share with a viewer",
+                (Action)(() => Browser.Open(TailscaleStatus.MachinesPage))),
+        };
+        _tailscaleStatus.Text = status;
+        _tailscaleAction.Text = action;
+        _tailscaleAction.Visible = true;
+        _tailscaleNextStep = next;
+        _tailscaleSteps.Visible = state.Stage == TailscaleStage.Running;
     }
 
     private AppSettings Result()

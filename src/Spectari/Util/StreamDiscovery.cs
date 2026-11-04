@@ -92,7 +92,7 @@ public static class StreamDiscovery
 
     internal static string? GetSelfDnsName()
     {
-        string? json = RunTailscale("status --json");
+        string? json = TailscaleStatus.RunCli("status --json");
         if (json is null) return null;
         using var document = JsonDocument.Parse(json);
         return document.RootElement.TryGetProperty("Self", out var self)
@@ -127,7 +127,7 @@ public static class StreamDiscovery
     /// Tailscale CLI is missing or errors - remembered endpoints still get probed.</summary>
     private static List<(string Ip, string Name, bool IsLocal)> GetTailnetPeers()
     {
-        string? json = RunTailscale("status --json");
+        string? json = TailscaleStatus.RunCli("status --json");
         if (json is null) return [];
         var peers = new List<(string, string, bool)>();
         try
@@ -159,7 +159,7 @@ public static class StreamDiscovery
     /// around). "idle" means no recent traffic, so the path is undecided.</summary>
     public static string DescribeTailnetPaths()
     {
-        string? json = RunTailscale("status --json");
+        string? json = TailscaleStatus.RunCli("status --json");
         if (json is null) return "tailscale CLI not found or not running";
         var parts = new List<string>();
         try
@@ -190,27 +190,6 @@ public static class StreamDiscovery
         }
         catch { return "tailscale status unreadable"; }
         return parts.Count == 0 ? "no online peers" : string.Join(", ", parts);
-    }
-
-    private static string? RunTailscale(string args)
-    {
-        string[] candidates =
-        [
-            "tailscale",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe"),
-        ];
-        foreach (string exe in candidates)
-        {
-            try
-            {
-                // Drains both pipes and can't block past 5s - a tailscale that
-                // hangs without closing stdout no longer wedges Find Streams.
-                var r = ProcessRunner.Run(exe, args, 5000);
-                if (!r.TimedOut && r.ExitCode == 0 && r.StdOut.Length > 0) return r.StdOut;
-            }
-            catch { }
-        }
-        return null;
     }
 
     private static List<string> LoadRemembered()

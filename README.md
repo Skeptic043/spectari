@@ -94,6 +94,10 @@ One-time setup on the hosting PC:
    address that starts with 100.x.
 3. Start streaming.
 
+Settings in the app shows whether Tailscale is installed, signed in, and
+connected, offers the next step when it is not, and has a Share with a viewer
+button that opens the Tailscale page for sharing this PC.
+
 There are two ways for a viewer to connect.
 
 ### Viewers who just watch: share your PC with them
