@@ -363,31 +363,26 @@ setInterval(() => {
   statsEl.textContent = describeStats();
 }, 1000);
 
-// The stats panel, in plain words. Frame rates are what actually arrives
-// here, averaged over a few seconds so they do not flicker.
+// The stats panel. fps and dropped are what actually arrives at this
+// browser, averaged over a few seconds so they do not flicker. Delay parts
+// are rounded first so delay is exactly network + buffer as shown.
 function describeStats() {
-  const average = values => Math.round(values.reduce((a, b) => a + b, 0) / values.length);
-  const playing = video.videoWidth > 0 && stat.arrived.length > 0;
-  const fps = playing ? average(stat.arrived) : null;
-  const skipped = playing ? average(stat.skipped) : 0;
-  const video_ = playing ? `${video.videoWidth} × ${video.videoHeight} at ${fps} fps` : "waiting for video…";
-
-  const playback = !playing ? "–"
-    : skipped === 0 ? "smooth, every frame shown"
-    : `${skipped === 1 ? "1 frame" : `${skipped} frames`} skipped each second`;
-
+  const average = values => values.length
+    ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : null;
+  const fps = average(stat.arrived);
+  const dropped = average(stat.skipped);
   const lag = video.buffered.length
     ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
-  const network = clock.offset === null ? null : Math.max(0, (stat.rawWire + clock.offset) / 1000);
-  const catching = video.playbackRate > 1 ? ", catching up" : video.playbackRate < 1 ? ", building buffer" : "";
-  const delay = network === null
-    ? "measuring…"
-    : `${(network + lag).toFixed(1)} s behind live (${lag.toFixed(1)} s buffer${catching})`;
+  const buffer = Math.round(lag * 1000);
+  const network = clock.offset === null ? null : Math.max(0, Math.round(stat.rawWire + clock.offset));
 
-  return `Video     ${video_}\n` +
-         `Playback  ${playback}\n` +
-         `Delay     ${delay}\n` +
-         `Data      ${(stat.kbps / 1000).toFixed(1)} Mbps`;
+  return `stream   ${video.videoWidth}x${video.videoHeight} @ ${fps ?? "–"} fps\n` +
+         `dropped  ${fps ? `${dropped}/${fps} per second` : "–"}\n` +
+         (network === null
+           ? `delay    measuring…\n  buffer  ${buffer} ms\n`
+           : `delay    ${network + buffer} ms\n  network ${network} ms\n  buffer  ${buffer} ms\n`) +
+         `bitrate  ${stat.kbps} kbps\n` +
+         `rate     ${video.playbackRate.toFixed(2)}x`;
 }
 
 connect();
