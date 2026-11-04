@@ -46,6 +46,46 @@ internal static class StreamOptions
         new("CPU (x264)", "libx264"),
     ];
 
+    /// <summary>
+    /// The encoders this PC can use: hardware encoders only when a GPU from
+    /// that vendor is present. Raw BGRA frames are piped to ffmpeg, so capture
+    /// and encoder adapters are independent.
+    /// </summary>
+    internal static EncoderChoice[] DetectEncoderChoices()
+    {
+        var hardwareVendors = new HashSet<uint>();
+        try
+        {
+            using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory1>();
+            for (uint i = 0; factory.EnumAdapters1(i, out Vortice.DXGI.IDXGIAdapter1? adapter).Success; i++)
+            {
+                using (adapter)
+                {
+                    var description = adapter!.Description1;
+                    uint vendorId = (uint)description.VendorId;
+                    if ((description.Flags & Vortice.DXGI.AdapterFlags.Software) != 0 || vendorId == 0x1414)
+                        continue;
+                    hardwareVendors.Add(vendorId);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // A failed DXGI read must leave every manual choice available; the
+            // encoder probe and watchdog remain the runtime guard.
+            Console.WriteLine($"[encoder] DXGI adapter enumeration failed ({ex.Message}); showing all encoder choices.");
+            return Encoders;
+        }
+
+        return Encoders.Where(e => e.Value switch
+        {
+            "h264_nvenc" => hardwareVendors.Contains(0x10DE),
+            "h264_amf" => hardwareVendors.Contains(0x1002),
+            "h264_qsv" => hardwareVendors.Contains(0x8086),
+            _ => true,
+        }).ToArray();
+    }
+
     internal static readonly int DefaultPresetIndex =
         Array.FindIndex(Presets, p => p.Height == 1080 && p.Fps == 60);
 

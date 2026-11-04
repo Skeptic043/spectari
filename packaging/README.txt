@@ -21,7 +21,7 @@ SETUP (once, ~2 minutes)
    Tailscale is not required. Full setup instructions:
    https://github.com/Skeptic043/spectari#readme
 2. Double-click Spectari.exe and Start a stream. If a friend can't
-   connect, click "Open port" in the app: it asks Windows for
+   connect, click "Open port" in Settings: it asks Windows for
    administrator approval once and configures the stream port for you
    (the port is what Spectari serves the stream on and what viewers'
    browsers connect to). You normally do this once for each port you use.
@@ -32,7 +32,7 @@ SETUP (once, ~2 minutes)
 
    The firewall rule allows only Tailscale by default. To also let devices
    on your local network (LAN) reach the stream, tick "Allow LAN viewers"
-   in the app before clicking "Open port". setup.bat always sets up
+   in Settings before clicking "Open port". setup.bat always sets up
    Tailscale-only. Use the app for LAN access.
 
 STREAMING
@@ -61,7 +61,7 @@ Minimizing keeps the app on the taskbar and keeps streaming. Closing the
 window stops your stream. If Spectari is already running, launching it
 again just brings that window back instead of opening a second copy. The
 app waits for the first captured frame before reporting the stream as
-live. If it stops with a capture error instead, use "Copy log" (it
+live. If it stops with a capture error instead, use "Copy log" in Settings (it
 includes version, system, GPU, and encoder info along with the recent
 log). Review and redact it before sharing the relevant excerpt.
 
@@ -107,13 +107,13 @@ TIPS
 IF SOMETHING BREAKS
 -------------------
 Every run writes a log file (its path is printed at the top of the app's
-log panel). "Copy log" puts the session log plus version, system, GPU,
+log panel). "Copy log" in Settings puts the session log plus version, system, GPU,
 and encoder info on the clipboard. Review and remove viewer links, keys,
 addresses, names, or other private information before posting a relevant
 excerpt with steps to reproduce the problem.
 
 - Stream page never loads: the port isn't open yet, or Tailscale isn't
-  connected on one end. Click "Open port" in the app (or run setup.bat
+  connected on one end. Click "Open port" in Settings (or run setup.bat
   as admin) and try again.
 - Status shows "THIS PC ONLY": click "Open port" for that port. The app
   restarts an active stream automatically. If you run setup.bat instead,
@@ -123,7 +123,7 @@ excerpt with steps to reproduce the problem.
   or run setup.bat.
 - "Port ... is already in use": another program (often another copy of
   Spectari still running) has that port. Close it, or set a different
-  port in the app.
+  port in Settings.
 - Everything looks fine on your end but nobody can connect: firewall
   state can drift (a Windows reset, another program, a network profile
   change). Click "Open port" again. It configures one port at a time, so

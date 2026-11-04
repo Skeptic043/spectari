@@ -25,37 +25,6 @@ public sealed class MainForm : Form
     // that only take effect through a restart are disabled - the dimming is
     // the point, it funnels changes through the Switch source button.
 
-    private sealed class AppSettings
-    {
-        public string SourceKind { get; set; } = "window";
-        public string WindowProcess { get; set; } = "";
-        public string MonitorDeviceName { get; set; } = "";
-        public string CaptureDeviceSymbolicLink { get; set; } = "";
-        [JsonPropertyName("MonitorIndex")]
-        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        public int? LegacyMonitorIndex { get; set; }
-        // Presets are stored by height+fps, not array index - adding a preset
-        // used to silently shift everyone's saved choice.
-        public int PresetHeight { get; set; } = 1080;
-        public int PresetFps { get; set; } = 60;
-        public string BitrateTier { get; set; } = "med"; // "low" | "med" | "high"
-        public string AudioSource { get; set; } = "window"; // reserved mode key or process name
-        public int Port { get; set; } = 8093;
-        public string StreamName { get; set; } = ""; // shown to viewers; empty = machine name
-        public string Encoder { get; set; } = "auto";
-        // Set only when Open port with "Allow LAN" checked actually succeeded,
-        // so the app knows LAN addresses are reachable (not merely requested).
-        public bool AllowLan { get; set; }
-        // The exact port that Open port last configured. LAN is advertised only
-        // when AllowLan is set AND the port in play matches this, so editing the
-        // port after a successful fix can't advertise LAN on a port never opened.
-        // A missing value deserializes to 0, which matches no real port, so LAN
-        // stays off until the next successful Open port on that port.
-        public int AllowLanPort { get; set; }
-        // Canonical four-component version dismissed from the update notice.
-        public string SkipUpdateVersion { get; set; } = "";
-    }
-
     private static readonly string SettingsPath = AppPaths.SettingsFile;
     private const int SourceGroupExpandedHeight = 170;
 
@@ -68,19 +37,8 @@ public sealed class MainForm : Form
     private readonly ComboBox _captureDeviceCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 330, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _presetCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 210, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _bitrateCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, FlatStyle = FlatStyle.Flat };
-    private readonly ComboBox _encoderCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170, FlatStyle = FlatStyle.Flat };
     private readonly ComboBox _audioCombo = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230, FlatStyle = FlatStyle.Flat };
-    private readonly TextBox _nameInput = new() { Width = 150, MaxLength = 32, BorderStyle = BorderStyle.FixedSingle, Text = Environment.MachineName };
     private readonly Button _watchButton = new() { Text = "Watch streams", Width = 118, Height = 38 };
-    // 26px: at 24 the label's descenders (p/y/g) clipped against the border.
-    private readonly Button _bundleButton = new() { Text = "Copy log", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-    private readonly Button _openLogsButton = new() { Text = "Open logs", Width = 82, Height = 26, Anchor = AnchorStyles.Top | AnchorStyles.Right };
-    private readonly Button _fixPortButton = new() { Text = "Open port", Width = 82, Height = 26 };
-    // Default off: Tailscale-only is the secure default. The tooltip carries the
-    // full scope because the checkbox sits in the compact Misc group.
-    private readonly CheckBox _allowLanCheck = new() { Text = "Allow LAN viewers", AutoSize = true, Checked = false, Margin = new Padding(8, 5, 0, 0) };
-    private readonly ToolTip _toolTip = new();
-    private readonly NumericUpDown _portInput = new() { Minimum = 1024, Maximum = 65535, Value = 8093, Width = 80 };
     private readonly Button _startButton = new() { Text = "▶  Start streaming", Width = 160, Height = 38 };
     private readonly Button _copyButton = new() { Text = "Copy link", Width = 68, Height = 38, Margin = new Padding(3, 3, 0, 3) };
     private readonly Button _copyMenuButton = new() { Text = "v", Width = 24, Height = 38, Margin = new Padding(0, 3, 3, 3), AccessibleName = "Copy link options" };
@@ -122,6 +80,8 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _previewPollTimer = new() { Interval = 500 };
 
     private readonly SourceSelectionModel _sourceSelection = new();
+    private readonly EncoderChoice[] _encoderChoices = DetectEncoderChoices();
+    private AppSettings _settings = new();
     private readonly HostAccessService _hostAccess;
     private readonly ShareLinkResolver _shareLinks;
     private readonly StreamController _streamController;
@@ -129,7 +89,7 @@ public sealed class MainForm : Form
     private readonly UpdateBanner _updateBanner;
     private readonly CaptureDeviceChangeMonitor _captureDeviceChanges;
     private WatchForm? _watchForm;
-    private int _livePort; // pinned while streaming so link/copy ignore edits to the port box
+    private int _livePort; // pinned while streaming so link/copy ignore port edits in Settings
     private string _savedBitrateTier = "med"; // from settings, applied on the first populate
     private string _persistedCaptureDeviceSymbolicLink = "";
     private bool _refreshingSourceOptions; // suppresses preset events caused by Native relabeling
@@ -207,55 +167,17 @@ public sealed class MainForm : Form
         _audioCombo.Width = 330;
         _sourceGroup.Controls.Add(sourceGrid);
 
-        var optionsRow = new TableLayoutPanel { Dock = DockStyle.Top, Height = 132, ColumnCount = 2, BackColor = Bg };
-        optionsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
-        optionsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-
-        var qualityGroup = MakeGroup("Quality", 0);
-        qualityGroup.Dock = DockStyle.Fill;
-        qualityGroup.Margin = new Padding(0, 0, 3, 0);
-        var qualityGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
+        var qualityGroup = MakeGroup("Quality", 96);
+        var qualityGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2 };
         qualityGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         qualityGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         qualityGrid.Controls.Add(new Label { Text = "Preset:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 0);
         qualityGrid.Controls.Add(_presetCombo, 1, 0);
         qualityGrid.Controls.Add(new Label { Text = "Bitrate:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 1);
         qualityGrid.Controls.Add(_bitrateCombo, 1, 1);
-        qualityGrid.Controls.Add(new Label { Text = "Encoder:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 2);
-        qualityGrid.Controls.Add(_encoderCombo, 1, 2);
         _presetCombo.Width = 250; // the Native entry carries the source resolution
         _bitrateCombo.Width = 190;
         qualityGroup.Controls.Add(qualityGrid);
-
-        var miscGroup = MakeGroup("Misc", 0);
-        miscGroup.Dock = DockStyle.Fill;
-        miscGroup.Margin = new Padding(3, 0, 0, 0);
-        var miscGrid = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 3 };
-        miscGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        miscGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        miscGrid.Controls.Add(new Label { Text = "Name:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 0);
-        miscGrid.Controls.Add(_nameInput, 1, 0);
-        miscGrid.Controls.Add(new Label { Text = "Port:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 1);
-        miscGrid.Controls.Add(_portInput, 1, 1);
-        miscGrid.Controls.Add(new Label { Text = "Access:", AutoSize = true, Margin = new Padding(3, 8, 3, 0), ForeColor = Dim }, 0, 2);
-        var portAccessGroup = new FlowLayoutPanel
-        {
-            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-            Margin = new Padding(0), BackColor = Bg,
-        };
-        portAccessGroup.Controls.Add(_fixPortButton);
-        portAccessGroup.Controls.Add(_allowLanCheck);
-        miscGrid.Controls.Add(portAccessGroup, 1, 2);
-        _nameInput.Margin = new Padding(3, 5, 3, 0);
-        _toolTip.SetToolTip(_allowLanCheck,
-            "Also allow devices on your local network, not just Tailscale, to reach this stream");
-        _toolTip.SetToolTip(_fixPortButton,
-            "Asks for administrator approval once and opens the current port for viewers (Tailscale-only unless Allow LAN is checked)");
-        miscGroup.Controls.Add(miscGrid);
-
-        optionsRow.Controls.Add(qualityGroup, 0, 0);
-        optionsRow.Controls.Add(miscGroup, 1, 0);
 
         var actionPanel = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 50, Padding = new Padding(8, 5, 0, 0), BackColor = Bg };
         actionPanel.Controls.Add(_startButton);
@@ -271,17 +193,10 @@ public sealed class MainForm : Form
         // size / DPI scaling (manual X-positions drifted off the edge).
         // Height/bottom padding leave room for the status text's descenders and a
         // couple px of gap above the log box (the amber LIVE line sat flush to it).
-        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Bg, ColumnCount = 3, Padding = new Padding(12, 4, 8, 2) };
+        var statusPanel = new TableLayoutPanel { Dock = DockStyle.Top, Height = 34, BackColor = Bg, ColumnCount = 1, Padding = new Padding(12, 4, 8, 2) };
         statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        statusPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         statusPanel.Controls.Add(_statusLabel, 0, 0);
-        statusPanel.Controls.Add(_openLogsButton, 1, 0);
-        statusPanel.Controls.Add(_bundleButton, 2, 0);
-        _toolTip.SetToolTip(_openLogsButton, "Open the folder containing the log file");
         _statusLabel.Anchor = AnchorStyles.Left;
-        _openLogsButton.Anchor = AnchorStyles.Right;
-        _bundleButton.Anchor = AnchorStyles.Right;
         _statusLabel.ForeColor = Dim;
 
         _previewPanel.Controls.Add(_previewBox);
@@ -297,12 +212,11 @@ public sealed class MainForm : Form
         Controls.Add(_lowerPanel);
         Controls.Add(statusPanel);
         Controls.Add(actionPanel);
-        Controls.Add(optionsRow);
+        Controls.Add(qualityGroup);
         Controls.Add(_sourceGroup);
 
         _presetCombo.Items.AddRange(Presets);
         _presetCombo.SelectedIndex = DefaultPresetIndex;
-        PopulateEncoderChoices();
 
         DarkTheme.Apply(this);
         _startButton.BackColor = AccentDark;
@@ -319,7 +233,6 @@ public sealed class MainForm : Form
             },
             ConsoleMirror.WriteClassifiedLine);
         _shareLinks = new ShareLinkResolver(_hostAccess);
-        _hostAccess.SetupStarted += _ => SetHostAccessControlsEnabled(false);
         _hostAccess.SetupCompleted += RenderHostAccessSetupResult;
 
         _streamController = new StreamController(new StreamControllerHooks(
@@ -336,6 +249,7 @@ public sealed class MainForm : Form
         _streamController.SessionStarted += RenderStartedStream;
         _updateFlow = new UpdateFlow(this, _streamController);
         var menuBar = AppMenuBar.Create(
+            openSettings: ShowSettings,
             checkForUpdates: () => _ = _updateFlow.CheckNowAsync(),
             showReleaseNotes: () => _ = _updateFlow.ShowReleaseNotesAsync(),
             sendFeedback: () => FeedbackDialog.ShowFor(this));
@@ -422,11 +336,6 @@ public sealed class MainForm : Form
         copyMenu.Items.Add(copyLanItem);
         _copyMenuButton.Click += (_, _) => copyMenu.Show(_copyMenuButton, new Point(0, _copyMenuButton.Height));
         _watchButton.Click += (_, _) => OpenWatchWindow();
-        _bundleButton.Click += (_, _) => CopySupportBundle();
-        _openLogsButton.Click += (_, _) => OpenLogsFolder();
-        _fixPortButton.Click += (_, _) => FixPortAccess();
-        _portInput.ValueChanged += (_, _) => { UpdateLinkBox(); RestartIdleServer(); };
-        _nameInput.Leave += (_, _) => RestartIdleServer(); // idle stats carry the name
         _statsTimer.Tick += (_, _) => UpdateStatus();
         _idleRetryTimer.Tick += (_, _) => StartIdleServer();
         _previewDebounceTimer.Tick += (_, _) => StartIdlePreview();
@@ -481,7 +390,6 @@ public sealed class MainForm : Form
             _idleRetryTimer.Dispose();
             _previewDebounceTimer.Dispose();
             _previewPollTimer.Dispose();
-            _toolTip.Dispose();
             _uiHangWatchdog?.Dispose();
             _uiHangWatchdog = null;
         };
@@ -494,8 +402,11 @@ public sealed class MainForm : Form
             $"[boot] source enumeration complete: {_sourceSelection.Windows.Count} windows, " +
             $"{_sourceSelection.Monitors.Count} monitors, {_sourceSelection.CaptureDevices.Count} capture devices");
         LoadSettings();
-        Console.WriteLine("[boot] update check start");
-        _ = _updateBanner.CheckAsync();
+        if (_settings.CheckForUpdatesOnStartup)
+        {
+            Console.WriteLine("[boot] update check start");
+            _ = _updateBanner.CheckAsync();
+        }
         UpdateLinkBox();
         RefreshSourceOptions();
         SetPreviewLayoutVisible(true);
@@ -843,7 +754,7 @@ public sealed class MainForm : Form
     {
         // Reuse the pending key so links copied while idle (they carry ?k=this)
         // stay valid the moment the stream goes live. Rotated after a live stop.
-        var config = BuildConfigFromUi((int)_portInput.Value, _pendingKey);
+        var config = BuildConfigFromUi(_settings.Port, _pendingKey);
         if (config is null)
         {
             ResumeIdlePreview();
@@ -920,7 +831,7 @@ public sealed class MainForm : Form
             MonitorHandle = monitorHandle,
             CaptureDeviceSymbolicLink = captureDeviceSymbolicLink,
             SourceName = sourceName,
-            StreamName = _nameInput.Text.Trim(),
+            StreamName = _settings.StreamName,
             AudioPid = audioPid,
             AudioMode = _sourceSelection.SelectedAudioMode,
             CaptureDesktopAudio = _sourceSelection.IsDesktopAudioSelected,
@@ -930,7 +841,7 @@ public sealed class MainForm : Form
             BitrateKbps = (_bitrateCombo.SelectedItem as BitrateChoice)?.Kbps ?? 0, // 0 = session auto (Medium)
             OutHeight = preset.Height,
             Port = port,
-            Encoder = ((EncoderChoice)_encoderCombo.SelectedItem!).Value,
+            Encoder = _settings.Encoder,
             ViewKey = viewKey,
         };
     }
@@ -1010,7 +921,6 @@ public sealed class MainForm : Form
         using var dialog = new SwitchSourceDialog(
             dialogSources,
             _presetCombo.Items.Cast<object>().ToArray(), _presetCombo.SelectedIndex,
-            _encoderCombo.Items.Cast<object>().ToArray(), _encoderCombo.SelectedIndex,
             (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier,
             _streamController.HasSession,
             _captureDeviceChanges);
@@ -1061,7 +971,6 @@ public sealed class MainForm : Form
             _captureDeviceCombo,
             _audioCombo);
         if (choice.PresetIndex >= 0) _presetCombo.SelectedIndex = choice.PresetIndex;
-        if (choice.EncoderIndex >= 0) _encoderCombo.SelectedIndex = choice.EncoderIndex;
         // Writing the source/preset back above repopulated the main bitrate combo;
         // now apply the tier the user picked in the dialog.
         if (choice.BitrateTier is { } tier)
@@ -1104,7 +1013,7 @@ public sealed class MainForm : Form
         if (_streamController.HasSession || _idleServer is not null) { _idleRetryTimer.Stop(); return; }
         try
         {
-            var server = new WebServer((int)_portInput.Value, null, null, _nameInput.Text.Trim());
+            var server = new WebServer(_settings.Port, null, null, _settings.StreamName);
             var cts = new CancellationTokenSource();
             _idleServer = server;
             _idleCts = cts;
@@ -1119,7 +1028,7 @@ public sealed class MainForm : Form
             _idleRetryTimer.Stop();
             _idleBindFailed = false;
             UpdateLinkBox();
-            Console.WriteLine($"[http] holding page listening on port {_portInput.Value}");
+            Console.WriteLine($"[http] holding page listening on port {_settings.Port}");
         }
         catch (Exception ex)
         {
@@ -1197,50 +1106,6 @@ public sealed class MainForm : Form
         }
     }
 
-    private void PopulateEncoderChoices()
-    {
-        var hardwareVendors = new HashSet<uint>();
-        bool enumerationFailed = false;
-        try
-        {
-            using var factory = Vortice.DXGI.DXGI.CreateDXGIFactory1<Vortice.DXGI.IDXGIFactory1>();
-            for (uint i = 0; factory.EnumAdapters1(i, out Vortice.DXGI.IDXGIAdapter1? adapter).Success; i++)
-            {
-                using (adapter)
-                {
-                    var description = adapter!.Description1;
-                    uint vendorId = (uint)description.VendorId;
-                    if ((description.Flags & Vortice.DXGI.AdapterFlags.Software) != 0 || vendorId == 0x1414)
-                        continue;
-                    hardwareVendors.Add(vendorId);
-                }
-            }
-        }
-        catch
-        {
-            enumerationFailed = true;
-        }
-
-        // Raw BGRA frames are piped to ffmpeg, so capture and encoder adapters
-        // are independent. The picker only needs hardware from the encoder vendor.
-        EncoderChoice[] choices = enumerationFailed
-            ? Encoders
-            : Encoders.Where(e => e.Value switch
-            {
-                "h264_nvenc" => hardwareVendors.Contains(0x10DE),
-                "h264_amf" => hardwareVendors.Contains(0x1002),
-                "h264_qsv" => hardwareVendors.Contains(0x8086),
-                _ => true,
-            }).ToArray();
-
-        _encoderCombo.Items.AddRange(choices);
-        _encoderCombo.SelectedIndex = 0;
-        // A failed DXGI read must leave every manual choice available; the
-        // encoder probe and watchdog remain the runtime guard.
-        if (enumerationFailed)
-            Console.WriteLine("[encoder] DXGI adapter enumeration failed; showing all encoder choices.");
-    }
-
     /// <summary>Rewrites the Native preset entries with the selected source's real
     /// resolution, e.g. "Native · 60 fps (2560x1440)". The bitrate dropdown next
     /// to it carries the Mbps numbers.</summary>
@@ -1274,7 +1139,6 @@ public sealed class MainForm : Form
         }
         _presetCombo.Enabled = on;
         _bitrateCombo.Enabled = on;
-        _encoderCombo.Enabled = on;
         _audioCombo.Enabled = on;
     }
 
@@ -1321,7 +1185,7 @@ public sealed class MainForm : Form
         if (reachability == ShareReachability.LocalOnly)
         {
             _statusLabel.ForeColor = Color.Goldenrod;
-            _statusLabel.Text = $"LIVE, THIS PC ONLY: click Open port in Misc to let viewers reach port {_livePort}";
+            _statusLabel.Text = $"LIVE, THIS PC ONLY: click Open port in Settings to let viewers reach port {_livePort}";
         }
         else if (reachability is ShareReachability.Tailscale or ShareReachability.Lan)
         {
@@ -1332,7 +1196,7 @@ public sealed class MainForm : Form
         else
         {
             _statusLabel.ForeColor = Color.Goldenrod;
-            _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or check Allow LAN and click Open port in Misc.";
+            _statusLabel.Text = "LIVE, but no reachable address in the current scope. Start Tailscale, or check Allow LAN and click Open port in Settings.";
         }
         Text = $"Spectari - LIVE ({b.ViewerCount} watching)";
     }
@@ -1352,7 +1216,7 @@ public sealed class MainForm : Form
     {
         StreamSession? live = _streamController.CurrentSession;
         return new ShareLinkContext(
-            (int)_portInput.Value,
+            _settings.Port,
             _livePort,
             live is not null,
             live?.LocalOnly == true,
@@ -1413,9 +1277,10 @@ public sealed class MainForm : Form
     /// <summary>Relaunches this exe elevated to reserve the URL and open the
     /// firewall for the current port (same steps as setup.bat), then restarts
     /// the stream so the new binding takes effect. One UAC prompt, no file hunting.</summary>
-    private void FixPortAccess()
+    /// <param name="requestedPort">The port in Settings; a live stream keeps its own port.</param>
+    private void FixPortAccess(int requestedPort, bool allowLan)
     {
-        int port = ShareLinkResolver.ResolveActiveTarget(CurrentShareLinkContext()).Port;
+        int port = _livePort != 0 ? _livePort : requestedPort;
         HostReservationReview reservation = _hostAccess.ReviewReservation(port);
         if (reservation.Status != HostReservationStatus.AvailableOrOwned)
         {
@@ -1435,19 +1300,11 @@ public sealed class MainForm : Form
             }
         }
 
-        _hostAccess.TryConfigure(port, _allowLanCheck.Checked, Application.ExecutablePath);
-    }
-
-    private void SetHostAccessControlsEnabled(bool enabled)
-    {
-        _allowLanCheck.Enabled = enabled;
-        _portInput.Enabled = enabled;
-        _fixPortButton.Enabled = enabled;
+        _hostAccess.TryConfigure(port, allowLan, Application.ExecutablePath);
     }
 
     private void RenderHostAccessSetupResult(HostAccessSetupResult result)
     {
-        SetHostAccessControlsEnabled(true);
         if (result.Outcome == HostAccessSetupOutcome.Succeeded)
         {
             SaveSettings();
@@ -1538,7 +1395,7 @@ public sealed class MainForm : Form
                 {
                     _streamController.LastConfig?.SourceName,
                     _streamController.LastConfig?.StreamName,
-                    _nameInput.Text,
+                    _settings.StreamName,
                     _sourceSelection.SelectedWindow?.Title,
                     _sourceSelection.SelectedMonitor?.DeviceName,
                     _sourceSelection.SelectedCaptureDevice?.SymbolicLink,
@@ -1683,107 +1540,89 @@ public sealed class MainForm : Form
     private void LoadSettings()
     {
         Console.WriteLine("[boot] settings load start");
-        try
-        {
-            if (!File.Exists(SettingsPath))
-            {
-                Console.WriteLine("[boot] settings load complete: using defaults");
-                return;
-            }
-            var s = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath));
-            if (s is null)
-            {
-                Console.WriteLine("[boot] settings load complete: using defaults");
-                return;
-            }
+        _settings = AppSettingsStore.Load(SettingsPath);
+        if (!_encoderChoices.Any(choice => choice.Value == _settings.Encoder))
+            _settings.Encoder = "auto"; // the saved hardware encoder is not on this PC
 
-            SourceKind sourceKind = s.SourceKind switch
-            {
-                "monitor" => SourceKind.Monitor,
-                "capture-device" => SourceKind.CaptureDevice,
-                _ => SourceKind.Window,
-            };
-            if (sourceKind == SourceKind.CaptureDevice && _sourceSelection.CaptureDevices.Count == 0)
-                sourceKind = SourceKind.Window;
-            _sourceSelection.SelectKind(sourceKind);
-            _sourceSelection.SelectMonitorDevice(s.MonitorDeviceName, s.LegacyMonitorIndex);
-            _sourceSelection.SelectWindowProcess(s.WindowProcess);
-            _persistedCaptureDeviceSymbolicLink = s.CaptureDeviceSymbolicLink ?? "";
-            _sourceSelection.SelectCaptureDevice(_persistedCaptureDeviceSymbolicLink);
-            _sourceSelection.SelectAudioKey(s.AudioSource);
-            RenderMainSourceKind();
-            RenderSourcePickers(
-                _sourceSelection,
-                _windowCombo,
-                _monitorCombo,
-                _captureDeviceCombo,
-                _audioCombo);
-            // Set the saved tier first: changing the preset index below fires
-            // PopulateBitrateOptions, which reads _savedBitrateTier to reselect.
-            if (s.BitrateTier is "low" or "med" or "high") _savedBitrateTier = s.BitrateTier;
-            int presetIdx = Array.FindIndex(Presets, p => p.Height == s.PresetHeight && p.Fps == s.PresetFps);
-            _presetCombo.SelectedIndex = presetIdx >= 0 ? presetIdx : DefaultPresetIndex;
-            if (s.Port is >= 1024 and <= 65535) _portInput.Value = s.Port;
-            if (!string.IsNullOrWhiteSpace(s.StreamName)) _nameInput.Text = s.StreamName;
-            int encIdx = -1;
-            for (int i = 0; i < _encoderCombo.Items.Count; i++)
-            {
-                if (_encoderCombo.Items[i] is EncoderChoice e && e.Value == s.Encoder)
-                {
-                    encIdx = i;
-                    break;
-                }
-            }
-            _encoderCombo.SelectedIndex = encIdx >= 0 ? encIdx : 0;
-            _hostAccess.RestorePersistedState(s.AllowLan, s.AllowLanPort);
-            _allowLanCheck.Checked = s.AllowLan;
-            _updateBanner.SkippedVersion = s.SkipUpdateVersion;
-            Console.WriteLine("[boot] settings load complete");
-        }
-        catch (Exception ex)
+        SourceKind sourceKind = _settings.SourceKind switch
         {
-            Console.Error.WriteLine($"[boot] settings load failed: {ex}");
-        }
+            "monitor" => SourceKind.Monitor,
+            "capture-device" => SourceKind.CaptureDevice,
+            _ => SourceKind.Window,
+        };
+        if (sourceKind == SourceKind.CaptureDevice && _sourceSelection.CaptureDevices.Count == 0)
+            sourceKind = SourceKind.Window;
+        _sourceSelection.SelectKind(sourceKind);
+        _sourceSelection.SelectMonitorDevice(_settings.MonitorDeviceName, _settings.LegacyMonitorIndex);
+        _sourceSelection.SelectWindowProcess(_settings.WindowProcess);
+        _persistedCaptureDeviceSymbolicLink = _settings.CaptureDeviceSymbolicLink;
+        _sourceSelection.SelectCaptureDevice(_persistedCaptureDeviceSymbolicLink);
+        _sourceSelection.SelectAudioKey(_settings.AudioSource);
+        RenderMainSourceKind();
+        RenderSourcePickers(
+            _sourceSelection,
+            _windowCombo,
+            _monitorCombo,
+            _captureDeviceCombo,
+            _audioCombo);
+        // Set the saved tier first: changing the preset index below fires
+        // PopulateBitrateOptions, which reads _savedBitrateTier to reselect.
+        _savedBitrateTier = _settings.BitrateTier;
+        int presetIdx = Array.FindIndex(Presets, p => p.Height == _settings.PresetHeight && p.Fps == _settings.PresetFps);
+        _presetCombo.SelectedIndex = presetIdx >= 0 ? presetIdx : DefaultPresetIndex;
+        _hostAccess.RestorePersistedState(_settings.AllowLan, _settings.AllowLanPort);
+        _updateBanner.SkippedVersion = _settings.SkipUpdateVersion;
+        Console.WriteLine("[boot] settings load complete");
     }
 
     private void SaveSettings()
     {
         using IDisposable? operation = _uiHangWatchdog?.TrackOperation("settings save");
+        HostAccessPersistedState access = _hostAccess.PersistedState;
+        Preset preset = _presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex];
+        _settings.SourceKind = _sourceSelection.Kind switch
+        {
+            SourceKind.Monitor => "monitor",
+            SourceKind.CaptureDevice => "capture-device",
+            _ => "window",
+        };
+        _settings.WindowProcess = _sourceSelection.SelectedWindow?.ProcessName ?? "";
+        _settings.MonitorDeviceName = _sourceSelection.SelectedMonitor?.DeviceName ?? "";
+        _settings.LegacyMonitorIndex = null;
+        _settings.CaptureDeviceSymbolicLink =
+            _sourceSelection.SelectedCaptureDevice?.SymbolicLink ?? _persistedCaptureDeviceSymbolicLink;
+        _settings.PresetHeight = preset.Height;
+        _settings.PresetFps = preset.Fps;
+        _settings.BitrateTier = (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med";
+        _settings.AudioSource = _sourceSelection.AudioKey;
+        _settings.AllowLan = access.AllowLan;
+        _settings.AllowLanPort = access.Port;
+        _settings.SkipUpdateVersion = _updateBanner.SkippedVersion ?? "";
         try
         {
-            HostAccessPersistedState access = _hostAccess.PersistedState;
-            var s = new AppSettings
-            {
-                SourceKind = _sourceSelection.Kind switch
-                {
-                    SourceKind.Monitor => "monitor",
-                    SourceKind.CaptureDevice => "capture-device",
-                    _ => "window",
-                },
-                WindowProcess = _sourceSelection.SelectedWindow?.ProcessName ?? "",
-                MonitorDeviceName = _sourceSelection.SelectedMonitor?.DeviceName ?? "",
-                CaptureDeviceSymbolicLink =
-                    _sourceSelection.SelectedCaptureDevice?.SymbolicLink ??
-                    _persistedCaptureDeviceSymbolicLink,
-                PresetHeight = (_presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex]).Height,
-                PresetFps = (_presetCombo.SelectedItem as Preset ?? Presets[DefaultPresetIndex]).Fps,
-                BitrateTier = (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier ?? "med",
-                AudioSource = _sourceSelection.AudioKey,
-                Port = (int)_portInput.Value,
-                StreamName = _nameInput.Text.Trim(),
-                Encoder = ((EncoderChoice)_encoderCombo.SelectedItem!).Value,
-                AllowLan = access.AllowLan,
-                AllowLanPort = access.Port,
-                SkipUpdateVersion = _updateBanner.SkippedVersion ?? "",
-            };
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            // Write to a sibling temp file, then atomically swap it in, so a crash
-            // mid-write can't leave a truncated/corrupt settings.json behind.
-            string tmp = SettingsPath + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(s, new JsonSerializerOptions { WriteIndented = true }));
-            File.Move(tmp, SettingsPath, overwrite: true);
+            AppSettingsStore.Save(SettingsPath, _settings);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[settings] could not save settings: {ex.Message}");
+        }
+    }
+
+    private void ShowSettings()
+    {
+        AppSettings? edited = SettingsDialog.Edit(this, _settings, _encoderChoices, _hostAccess,
+            new SettingsActions(FixPortAccess, CopySupportBundle, OpenLogsFolder),
+            live: _streamController.HasSession);
+        if (edited is null) return;
+
+        bool serverChanged = edited.Port != _settings.Port || edited.StreamName != _settings.StreamName;
+        _settings = edited;
+        SaveSettings();
+        if (serverChanged)
+        {
+            UpdateLinkBox();
+            RestartIdleServer(); // the holding page carries the port and name
+        }
     }
 
     private static void AppendLog(string line) => ConsoleMirror.WriteOperatorLine(line);

@@ -6,17 +6,17 @@ using static Spectari.Ui.StreamOptions;
 namespace Spectari.Ui;
 
 /// <summary>The quality picks made in the Switch source dialog, as indexes into the main window's lists.</summary>
-internal sealed record SwitchSourceChoice(int PresetIndex, int EncoderIndex, string? BitrateTier);
+internal sealed record SwitchSourceChoice(int PresetIndex, string? BitrateTier);
 
 /// <summary>
-/// Guided switch: a small popup with the source, preset, bitrate, encoder, and
-/// audio pickers, prefilled from the current selections. Source and audio picks
+/// Guided switch: a small popup with the source, preset, bitrate, and audio
+/// pickers, prefilled from the current selections. Source and audio picks
 /// are made on the snapshot model it is given; the quality picks come back as a
 /// <see cref="SwitchSourceChoice"/>.
 /// </summary>
 internal sealed class SwitchSourceDialog : Form
 {
-    private const int ExpandedHeight = 306;
+    private const int ExpandedHeight = 272;
 
     private readonly SourceSelectionModel _sources;
     private readonly CaptureDeviceChangeMonitor _captureDeviceChanges;
@@ -31,7 +31,6 @@ internal sealed class SwitchSourceDialog : Form
     private readonly ComboBox _captureDeviceCombo = NewCombo(330);
     private readonly ComboBox _presetCombo = NewCombo(300);
     private readonly ComboBox _bitrateCombo = NewCombo(200);
-    private readonly ComboBox _encoderCombo = NewCombo(200);
     private readonly ComboBox _audioCombo = NewCombo(330);
     private readonly TaskCompletionSource<DialogResult> _completion =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -39,11 +38,9 @@ internal sealed class SwitchSourceDialog : Form
 
     /// <param name="sources">A fresh snapshot; the dialog's picks are written to it.</param>
     /// <param name="presetItems">The main preset list, so Native labels and indexes match.</param>
-    /// <param name="encoderItems">The main encoder list, so indexes match.</param>
     internal SwitchSourceDialog(
         SourceSelectionModel sources,
         object[] presetItems, int presetIndex,
-        object[] encoderItems, int encoderIndex,
         string? bitrateTier, bool live,
         CaptureDeviceChangeMonitor captureDeviceChanges)
     {
@@ -71,9 +68,7 @@ internal sealed class SwitchSourceDialog : Form
 
         RenderSourcePickers(sources, _winCombo, _monCombo, _captureDeviceCombo, _audioCombo);
         _presetCombo.Items.AddRange(presetItems);
-        _encoderCombo.Items.AddRange(encoderItems);
         _presetCombo.SelectedIndex = presetIndex;
-        _encoderCombo.SelectedIndex = encoderIndex;
         WirePickers();
         RefreshSourceOptions();
 
@@ -81,12 +76,12 @@ internal sealed class SwitchSourceDialog : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 2,
-            RowCount = 8,
+            RowCount = 7,
             Padding = new Padding(10),
         };
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int index = 0; index < 7; index++)
+        for (int index = 0; index < 6; index++)
             _grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         _grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         int row = 0;
@@ -100,7 +95,6 @@ internal sealed class SwitchSourceDialog : Form
         AddLabeledRow("Audio:", _audioCombo, row++);
         AddLabeledRow("Preset:", _presetCombo, row++);
         AddLabeledRow("Bitrate:", _bitrateCombo, row++);
-        AddLabeledRow("Encoder:", _encoderCombo, row++);
 
         var ok = new Button { Text = live ? "Switch" : "Start", Width = 96, Height = 28, DialogResult = DialogResult.OK };
         var cancel = new Button { Text = "Cancel", Width = 80, Height = 28, DialogResult = DialogResult.Cancel };
@@ -148,7 +142,6 @@ internal sealed class SwitchSourceDialog : Form
         if (result != DialogResult.OK) return null;
         return new SwitchSourceChoice(
             _presetCombo.SelectedIndex,
-            _encoderCombo.SelectedIndex,
             (_bitrateCombo.SelectedItem as BitrateChoice)?.Tier);
     }
 

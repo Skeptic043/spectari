@@ -369,7 +369,7 @@ internal static class Program
         return stopReason is null or "stopped" ? 0 : 1;
     }
 
-    private sealed record Options
+    internal sealed record Options
     {
         public int Monitor = 0;
         public string Window = "";
@@ -400,6 +400,10 @@ internal static class Program
         private static int InRange(string flag, int n, int lo, int hi) =>
             n >= lo && n <= hi ? n : throw new ArgumentException($"{flag} must be between {lo} and {hi} (got {n})");
 
+        private static string KnownEncoder(string encoder) =>
+            Util.StreamLimits.IsKnownEncoder(encoder) ? encoder
+                : throw new ArgumentException($"--encoder must be auto, h264_nvenc, h264_amf, h264_qsv, or libx264 (got '{encoder}')");
+
         public static Options Parse(string[] args)
         {
             var o = new Options();
@@ -410,20 +414,20 @@ internal static class Program
                     ? n : throw new ArgumentException($"{flag} expects a whole number, got '{args[i]}'");
                 switch (args[i])
                 {
-                    case "--monitor": o.Monitor = Int("--monitor"); break;
+                    case "--monitor": o.Monitor = NonNegative("--monitor", Int("--monitor")); break;
                     case "--window": o.Window = Next(); break;
-                    case "--fps": o.Fps = Positive("--fps", Int("--fps")); break;
-                    case "--bitrate": o.BitrateKbps = Int("--bitrate"); break;
+                    case "--fps": o.Fps = InRange("--fps", Int("--fps"), 1, Util.StreamLimits.MaxFps); break;
+                    case "--bitrate": o.BitrateKbps = InRange("--bitrate", Int("--bitrate"), 0, Util.StreamLimits.MaxBitrateKbps); break;
                     case "--port": o.Port = InRange("--port", Int("--port"), 1, 65535); break;
-                    case "--height": o.OutHeight = Positive("--height", Int("--height")); break;
+                    case "--height": o.OutHeight = InRange("--height", Int("--height"), Util.StreamLimits.MinHeight, Util.StreamLimits.MaxHeight); break;
                     case "--max-viewers": o.MaxViewers = NonNegative("--max-viewers", Int("--max-viewers")); break; // 0 = unlimited
                     case "--width": Positive("--width", Int("--width")); break; // legacy no-op; height drives scaling, AR preserved
-                    case "--encoder": o.Encoder = Next(); break;
+                    case "--encoder": o.Encoder = KnownEncoder(Next()); break;
                     case "--list-monitors": o.ListMonitors = true; break;
                     case "--list-windows": o.ListWindows = true; break;
                     case "--no-cursor": o.NoCursor = true; break;
                     case "--audio": o.Audio = Next(); break;
-                    case "--name": o.Name = Next(); break;
+                    case "--name": o.Name = Util.StreamLimits.CleanStreamName(Next()); break;
                     case "--no-audio": o.NoAudio = true; break;
                     case "--no-key": o.NoKey = true; break;
                     case "--compat-capture": o.CompatCapture = true; break;

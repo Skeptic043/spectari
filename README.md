@@ -67,9 +67,12 @@ does not require a separate .NET installation.
    streaming.
 2. Click Copy link and send it to whoever is watching. For someone on your
    LAN only, use the small arrow beside it and choose Copy LAN link.
-3. If someone can't connect, click Open port. It asks for administrator
-   approval and opens the stream port. To also allow LAN viewers, tick
-   "Allow LAN viewers" before clicking it.
+3. If someone can't connect, open Settings and click Open port. It asks for
+   administrator approval and opens the stream port. To also allow LAN
+   viewers, tick "Allow LAN viewers" before clicking it.
+
+Settings also holds the stream name, port, encoder, update checks, and the
+log buttons.
 
 Each stream start generates a new viewer key, so the link changes when you
 restart a stream. Eligible Tailscale viewers can recover the current key in
@@ -203,7 +206,7 @@ The model in plain terms:
   not guarantee 60 distinct captured frames each second.
 - **The stream stops with "video timing overload."** The pipeline could not
   recover its timing. Lower the frame rate or resolution and try again.
-- **Anything else.** Use Copy log, review and redact it, then
+- **Anything else.** Use Copy log in Settings, review and redact it, then
   [report an issue](https://github.com/Skeptic043/spectari/issues) with the
   relevant excerpt and steps to reproduce the problem. Never post a viewer
   link or key.
