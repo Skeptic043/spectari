@@ -31,7 +31,7 @@ internal sealed class SettingsDialog : Form
     private readonly CheckBox _checkUpdates = new() { Text = "Check for updates when Spectari starts", AutoSize = true };
     private readonly Label _tailscaleStatus = new() { Text = "Checking...", AutoSize = true, Margin = new Padding(3, 8, 8, 0) };
     private readonly Button _tailscaleAction = new() { AutoSize = true, MinimumSize = new Size(90, 28), Visible = false };
-    private readonly Button _tailscaleRecheck = new() { Text = "Check again", AutoSize = true, MinimumSize = new Size(90, 28) };
+    private readonly Button _tailscaleRecheck = new() { Text = "Refresh", AutoSize = true, MinimumSize = new Size(90, 28) };
     private readonly Label _tailscaleSteps = new()
     {
         AutoSize = true, MaximumSize = new Size(360, 0), ForeColor = Dim, Margin = new Padding(3, 0, 3, 6), Visible = false,
