@@ -17,7 +17,7 @@ public sealed class AudioPipelineTests
         uint pid, bool desktop, string? inputId, string? excludeApp, string expected)
     {
         using AudioPipeline pipeline = Assert.IsType<AudioPipeline>(
-            AudioPipeline.Create(pid, desktop, inputId, 8093, excludeApp));
+            AudioPipeline.Create(pid, desktop, inputId, 48093, excludeApp));
         var calls = new List<string>();
         using var capture = new FakeCapture();
 
@@ -42,52 +42,52 @@ public sealed class AudioPipelineTests
     [InlineData("")]
     public void AbsentInputAndNoOtherModeProducesNoPipeline(string? inputId)
     {
-        Assert.Null(AudioPipeline.Create(0, false, inputId, 8093));
+        Assert.Null(AudioPipeline.Create(0, false, inputId, 48093));
     }
 
     [Fact]
     public void ZeroAudioPidProducesNoPipeline()
     {
-        Assert.Null(AudioPipeline.Create(0, false, 8093));
+        Assert.Null(AudioPipeline.Create(0, false, 48093));
     }
 
     [Fact]
     public void DesktopModeProducesPipelineWithoutProcessId()
     {
         using AudioPipeline pipeline = Assert.IsType<AudioPipeline>(
-            AudioPipeline.Create(0, true, 8093));
+            AudioPipeline.Create(0, true, 48093));
 
-        Assert.Equal("spectari_audio_8093", pipeline.PipeName);
+        Assert.Equal("spectari_audio_48093", pipeline.PipeName);
     }
 
     [Fact]
     public void CaptureInputModeProducesPipelineWithoutProcessId()
     {
         using AudioPipeline pipeline = Assert.IsType<AudioPipeline>(
-            AudioPipeline.Create(0, false, "capture-input-id", 8093));
+            AudioPipeline.Create(0, false, "capture-input-id", 48093));
 
-        Assert.Equal("spectari_audio_8093", pipeline.PipeName);
+        Assert.Equal("spectari_audio_48093", pipeline.PipeName);
     }
 
     [Fact]
     public void MultipleAudioModesAreRejected()
     {
         Assert.Throws<ArgumentException>(() =>
-            new AudioPipeline(42, false, "capture-input-id", 8093));
+            new AudioPipeline(42, false, "capture-input-id", 48093));
         Assert.Throws<ArgumentException>(() =>
-            new AudioPipeline(0, true, "capture-input-id", 8093));
+            new AudioPipeline(0, true, "capture-input-id", 48093));
         Assert.Throws<ArgumentException>(() =>
-            new AudioPipeline(42, true, null, 8093));
+            new AudioPipeline(42, true, null, 48093));
         Assert.Throws<ArgumentException>(() =>
-            new AudioPipeline(42, true, "", 8093));
+            new AudioPipeline(42, true, "", 48093));
         Assert.Throws<ArgumentException>(() =>
-            new AudioPipeline(42, true, "capture-input-id", 8093));
+            new AudioPipeline(42, true, "capture-input-id", 48093));
     }
 
     [Fact]
     public void PipeNameIncludesTheConfiguredPort()
     {
-        Assert.Equal("spectari_audio_8093", AudioPipeline.FormatPipeName(8093));
+        Assert.Equal("spectari_audio_48093", AudioPipeline.FormatPipeName(48093));
     }
 
     [Fact]
