@@ -5,7 +5,8 @@ using static Spectari.Ui.StreamOptions;
 namespace Spectari.Ui;
 
 /// <summary>What the Settings window can ask the main window to do right away.</summary>
-internal sealed record SettingsActions(Action<int, bool> OpenPort, Action CopyLog, Action OpenLogs);
+/// <param name="OpenPort">Owner window for prompts, the port in the dialog, and whether to allow LAN viewers.</param>
+internal sealed record SettingsActions(Action<IWin32Window, int, bool> OpenPort, Action CopyLog, Action OpenLogs);
 
 /// <summary>
 /// The set-and-forget options: stream name, port, viewer access, Tailscale,
@@ -83,14 +84,14 @@ internal sealed class SettingsDialog : Form
         AddRow("Port:", _port);
         AddRow("Encoder:", _encoder);
         AddRow("Viewer access:", Flow(_openPort, _allowLan));
-        AddNote("Open port asks for administrator approval once and lets Tailscale viewers reach this port, plus LAN viewers if allowed.");
+        AddNote("Open port asks for administrator approval once and lets Tailscale viewers reach this port, plus LAN viewers if allowed. It also saves the port right away.");
         AddRow("Tailscale:", Flow(_tailscaleStatus, _tailscaleAction, _tailscaleRecheck));
         _grid.Controls.Add(_tailscaleSteps, 1, _row++);
         AddRow("Updates:", _checkUpdates);
         var openLogs = new Button { Text = "Open logs", AutoSize = true, MinimumSize = new Size(90, 28) };
         var copyLog = new Button { Text = "Copy log", AutoSize = true, MinimumSize = new Size(90, 28) };
         AddRow("Logs:", Flow(openLogs, copyLog));
-        if (live) AddNote("Name, port, and encoder changes apply to the next stream.");
+        if (live) AddNote("Port changes apply to the next stream. Name and encoder changes apply at the next start or Switch source.");
 
         var save = new Button { Text = "Save", DialogResult = DialogResult.OK, MinimumSize = new Size(90, 28) };
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, MinimumSize = new Size(90, 28) };
@@ -112,7 +113,7 @@ internal sealed class SettingsDialog : Form
 
         _openPort.Click += (_, _) =>
         {
-            if (!_accessBusy) actions.OpenPort((int)_port.Value, _allowLan.Checked);
+            if (!_accessBusy) actions.OpenPort(this, (int)_port.Value, _allowLan.Checked);
         };
         openLogs.Click += (_, _) => actions.OpenLogs();
         _tailscaleAction.Click += (_, _) => _tailscaleNextStep();

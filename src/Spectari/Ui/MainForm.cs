@@ -1277,10 +1277,20 @@ public sealed class MainForm : Form
     /// <summary>Relaunches this exe elevated to reserve the URL and open the
     /// firewall for the current port (same steps as setup.bat), then restarts
     /// the stream so the new binding takes effect. One UAC prompt, no file hunting.</summary>
+    /// <param name="owner">The window that asked, so prompts appear in front of it.</param>
     /// <param name="requestedPort">The port in Settings; a live stream keeps its own port.</param>
-    private void FixPortAccess(int requestedPort, bool allowLan)
+    private void FixPortAccess(IWin32Window owner, int requestedPort, bool allowLan)
     {
         int port = _livePort != 0 ? _livePort : requestedPort;
+        if (_livePort == 0 && port != _settings.Port)
+        {
+            // The opened port and the saved port must match, or LAN access is
+            // recorded for a port nothing serves on.
+            _settings.Port = port;
+            SaveSettings();
+            UpdateLinkBox();
+            RestartIdleServer();
+        }
         HostReservationReview reservation = _hostAccess.ReviewReservation(port);
         if (reservation.Status != HostReservationStatus.AvailableOrOwned)
         {
@@ -1291,7 +1301,7 @@ public sealed class MainForm : Form
                 : $"Port {port} is already reserved by another account:\n\n{reservation.Owner}\n\n" +
                   "Replacing that reservation may break the app that created it. " +
                   "Reserve this port for Spectari anyway?";
-            var choice = MessageBox.Show(this, body,
+            var choice = MessageBox.Show(owner, body,
                 "Spectari", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
             if (choice != DialogResult.Yes)
             {
