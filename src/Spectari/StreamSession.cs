@@ -564,6 +564,7 @@ public sealed class StreamSession
                 long total = freshCount + dupCount;
                 double dupPct = total > 0 ? dupCount * 100.0 / total : 0;
                 double windowSec = (double)(now - lastReport) / Stopwatch.Frequency;
+                broadcaster.SentFps = (int)Math.Round(total / windowSec);
                 broadcaster.SourceFps = (int)Math.Round((capture.FramesArrived - lastCompositorFrames) / windowSec);
                 broadcaster.DupPercent = (int)Math.Round(dupPct);
                 lastCompositorFrames = capture.FramesArrived;

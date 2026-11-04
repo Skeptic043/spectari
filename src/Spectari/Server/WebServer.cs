@@ -190,23 +190,7 @@ public sealed class WebServer : IDisposable
             {
                 // CORS so the grid page (served by a friend's host) can probe us
                 context.Response.AddHeader("Access-Control-Allow-Origin", "*");
-                var stats = _broadcaster is null
-                    ? new Dictionary<string, object?>
-                    {
-                        ["name"] = _idleName,
-                        ["state"] = "idle",
-                        ["viewers"] = 0,
-                    }
-                    : new Dictionary<string, object?>
-                    {
-                        ["name"] = _broadcaster.StreamName,
-                        ["state"] = _broadcaster.State,
-                        ["viewers"] = _broadcaster.ViewerCount,
-                        ["fragments"] = Interlocked.Read(ref _broadcaster.FragmentsSent),
-                        ["sourceFps"] = _broadcaster.SourceFps,
-                        ["dupPct"] = _broadcaster.DupPercent,
-                        ["audio"] = _broadcaster.HasAudio,
-                    };
+                var stats = BuildStats(_broadcaster, _idleName, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 await WriteResponseAsync(context, 200, "application/json", JsonSerializer.Serialize(stats));
                 return;
             }
@@ -247,6 +231,33 @@ public sealed class WebServer : IDisposable
         await context.Response.OutputStream.WriteAsync(bytes);
         context.Response.Close();
     }
+
+    /// <summary>
+    /// The public /api/stats body. Never includes the viewer key. nowMs is the
+    /// host clock (the same clock as fragment send times), so a viewer can
+    /// remove the clock difference between the two machines from its delay.
+    /// </summary>
+    internal static IReadOnlyDictionary<string, object?> BuildStats(Broadcaster? broadcaster, string idleName, long nowMs) =>
+        broadcaster is null
+            ? new Dictionary<string, object?>
+            {
+                ["name"] = idleName,
+                ["state"] = "idle",
+                ["viewers"] = 0,
+                ["nowMs"] = nowMs,
+            }
+            : new Dictionary<string, object?>
+            {
+                ["name"] = broadcaster.StreamName,
+                ["state"] = broadcaster.State,
+                ["viewers"] = broadcaster.ViewerCount,
+                ["fragments"] = Interlocked.Read(ref broadcaster.FragmentsSent),
+                ["sentFps"] = broadcaster.SentFps,
+                ["sourceFps"] = broadcaster.SourceFps,
+                ["dupPct"] = broadcaster.DupPercent,
+                ["audio"] = broadcaster.HasAudio,
+                ["nowMs"] = nowMs,
+            };
 
     public void Dispose()
     {

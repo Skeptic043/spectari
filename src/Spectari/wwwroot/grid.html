@@ -356,7 +356,7 @@ function pollTile(tile) {
       tile.classList.toggle("live", live);
       tile.querySelector(".name").textContent = s.name || url;
       tile.querySelector(".state").textContent = live
-        ? `${s.sourceFps} fps · ${s.viewers} watching`
+        ? `${s.sentFps ?? s.sourceFps} fps · ${s.viewers} watching`
         : s.state === "idle" ? "not streaming yet"
         : (s.state || "not streaming");
       // Validated (live OR the idle holding page, which is meant to embed):

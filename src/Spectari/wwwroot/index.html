@@ -107,6 +107,7 @@ badge.onclick = (event) => {
   event.stopPropagation();
   statsEl.classList.toggle("show");
   badge.classList.toggle("stats-open", statsEl.classList.contains("show"));
+  if (statsEl.classList.contains("show")) pollHost();
 };
 // Sound stays off until deliberately enabled via the hover or tap controls.
 // Clicking the video itself never changes audio.
@@ -138,19 +139,30 @@ const JUMP_AT = HURRY_AT + 2.0;                          // hard-seek only when 
 
 let ws = null, ms = null, sb = null, hello = null;
 let queue = [], queuedBytes = 0, retryMs = 500, hurrySince = null, lastDataAt = 0;
-let stat = { delay: 0, bytes: 0, bytesWindowStart: performance.now(), kbps: 0,
-             presented: 0, presentedLast: 0, displayFps: 0,
-             droppedLast: 0, totalLast: 0, dropWindow: "–",
-             sourceFps: "–", dupPct: "–" };
+// rawWire: viewer clock at arrival minus the host clock at send, smoothed.
+// It only becomes the network delay once the clock difference is removed.
+let stat = { rawWire: 0, bytes: 0, bytesWindowStart: performance.now(), kbps: 0,
+             presented: 0, presentedLast: 0, shownFps: 0, receivedFps: 0,
+             droppedLast: 0, totalLast: 0, dropWindow: "–", sentFps: "–" };
 
-// Host-side capture stats (source fps / dup %) - polled while the overlay is open.
-setInterval(() => {
-  if (!statsEl.classList.contains("show")) return;
-  fetch("/api/stats").then(r => r.json()).then(s => {
-    stat.sourceFps = s.sourceFps;
-    stat.dupPct = s.dupPct;
+// Host and viewer clocks differ, and fragment send times use the host clock.
+// Each stats poll estimates the difference from the request's round trip;
+// the sample with the shortest round trip is the most precise, so the
+// lowest-latency one of the recent samples wins.
+const clock = { samples: [], offset: null };
+function pollHost() {
+  const t0 = Date.now();
+  fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(s => {
+    const t1 = Date.now();
+    if (typeof s.sentFps === "number") stat.sentFps = s.sentFps;
+    if (typeof s.nowMs !== "number") return;
+    clock.samples.push({ rtt: t1 - t0, offset: s.nowMs - (t0 + t1) / 2 });
+    if (clock.samples.length > 8) clock.samples.shift();
+    clock.offset = clock.samples.reduce((best, x) => (x.rtt < best.rtt ? x : best)).offset;
   }).catch(() => {});
-}, 2000);
+}
+// Polled only while the overlay is open.
+setInterval(() => { if (statsEl.classList.contains("show")) pollHost(); }, 2000);
 
 if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
   const countPresented = () => { stat.presented++; video.requestVideoFrameCallback(countPresented); };
@@ -166,6 +178,7 @@ setInterval(() => { raf.fps = raf.count - raf.last; raf.last = raf.count; }, 100
 if (params.get("stats") === "1") {
   statsEl.classList.add("show");
   badge.classList.add("stats-open");
+  pollHost();
 }
 
 function setStatus(live, text) {
@@ -199,7 +212,7 @@ function connect() {
     }
     const dv = new DataView(ev.data);
     const sentMs = dv.getFloat64(0, true);
-    stat.delay = stat.delay * 0.9 + (Date.now() - sentMs) * 0.1;
+    stat.rawWire = stat.rawWire * 0.9 + (Date.now() - sentMs) * 0.1;
     stat.bytes += ev.data.byteLength;
     lastDataAt = performance.now();
     queue.push(new Uint8Array(ev.data, 8));
@@ -336,7 +349,7 @@ setInterval(() => {
     stat.kbps = Math.round((stat.bytes * 8) / winSec / 1000);
     stat.bytes = 0;
     stat.bytesWindowStart = now;
-    stat.displayFps = Math.round((stat.presented - stat.presentedLast) / winSec);
+    stat.shownFps = Math.round((stat.presented - stat.presentedLast) / winSec);
     stat.presentedLast = stat.presented;
   }
   const stalled = ws && ws.readyState === 1 && lastDataAt > 0 && performance.now() - lastDataAt > 3000;
@@ -353,20 +366,26 @@ setInterval(() => {
     const dd = q.droppedVideoFrames - stat.droppedLast;
     const dt = q.totalVideoFrames - stat.totalLast;
     stat.dropWindow = dt > 0 ? `${dd}/${dt} (${(dd * 100 / dt).toFixed(1)}%)` : "–";
+    // Received = frames that reached the decoder this second. Without
+    // requestVideoFrameCallback, shown = received minus dropped.
+    stat.receivedFps = Math.max(0, dt);
+    if (!("requestVideoFrameCallback" in HTMLVideoElement.prototype)) stat.shownFps = Math.max(0, dt - dd);
     stat.droppedLast = q.droppedVideoFrames;
     stat.totalLast = q.totalVideoFrames;
   }
   const lag = video.buffered.length
     ? (video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
+  // Rounded parts first, so delay is exactly network + buffer as shown.
+  const buffer = Math.round(lag * 1000);
+  const network = clock.offset === null ? null : Math.max(0, Math.round(stat.rawWire + clock.offset));
   statsEl.textContent =
     `stream   ${video.videoWidth}x${video.videoHeight}@${hello ? hello.fps : "?"}\n` +
-    `source   ${stat.sourceFps} fps (dup ${stat.dupPct}%)\n` +
-    `display  ${stat.displayFps} fps shown\n` +
+    `fps      sent ${stat.sentFps} · received ${stat.receivedFps} · shown ${stat.shownFps}\n` +
     `page     ${raf.fps} fps (compositor)\n` +
     `dropped  ${stat.dropWindow} last 1s\n` +
-    `delay    ${Math.max(0, stat.delay + lag * 1000).toFixed(0)} ms\n` +
-    `  wire   ${Math.max(0, stat.delay).toFixed(0)} ms\n` +
-    `  buffer ${(lag * 1000).toFixed(0)} ms\n` +
+    (network === null
+      ? `delay    measuring…\n  buffer ${buffer} ms\n`
+      : `delay    ${network + buffer} ms\n  network ${network} ms\n  buffer ${buffer} ms\n`) +
     `bitrate  ${stat.kbps} kbps\n` +
     `rate     ${video.playbackRate.toFixed(2)}x`;
 }, 1000);

@@ -204,10 +204,11 @@ The model in plain terms:
 - **Smooth on one browser, choppy on another.** Check that the browser's
   hardware acceleration is on. Add `&stats=1` to the link or click the LIVE
   badge for a diagnostics overlay.
-- **A 60 fps window share shows lower source fps.** Windows window capture can
-  deliver fewer fresh frames than the selected output rate. Try sharing the
-  monitor or lowering the frame rate or resolution. A 60 fps setting does
-  not guarantee 60 distinct captured frames each second.
+- **A 60 fps window share looks less smooth than 60 fps.** Windows window
+  capture can deliver fewer fresh frames than the selected output rate.
+  Spectari still sends the selected rate by repeating frames, so the stats
+  show 60 sent while motion looks slower. Try sharing the monitor or lowering
+  the frame rate or resolution.
 - **The stream stops with "video timing overload."** The pipeline could not
   recover its timing. Lower the frame rate or resolution and try again.
 - **Anything else.** Use Copy log in Settings, review and redact it, then

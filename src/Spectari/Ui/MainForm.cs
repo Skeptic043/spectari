@@ -1191,7 +1191,7 @@ public sealed class MainForm : Form
         {
             _statusLabel.ForeColor = Green;
             string lanTag = reachability == ShareReachability.Lan ? " (LAN)" : "";
-            _statusLabel.Text = $"LIVE{lanTag} · {session.Description} · {EncoderLabel(session.ActiveEncoder)}   viewers: {b.ViewerCount}   source: {b.SourceFps} fps (dup {b.DupPercent}%)";
+            _statusLabel.Text = $"LIVE{lanTag} · {session.Description} · {EncoderLabel(session.ActiveEncoder)}   viewers: {b.ViewerCount}   sending {b.SentFps} fps";
         }
         else
         {
