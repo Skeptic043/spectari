@@ -36,7 +36,7 @@ internal sealed class UpdateBanner : Panel
         AccessibleRole = AccessibleRole.Alert;
         AccessibleName = "Update available";
 
-        var viewRelease = MakeButton("View release", Card);
+        var viewRelease = MakeButton("Open on GitHub", Card);
         var updateNow = MakeButton("Update now", AccentDark);
         var dismiss = MakeButton("Dismiss", Card);
         viewRelease.Click += (_, _) => UpdateFlow.OpenReleasePage();
