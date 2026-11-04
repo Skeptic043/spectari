@@ -187,6 +187,11 @@ internal sealed class SwitchSourceDialog : Form
                 RefreshSourceOptions();
             }
         };
+        _audioCombo.DropDown += (_, _) =>
+        {
+            _sources.RefreshAudioApps();
+            RenderAudioPicker(_sources, _audioCombo);
+        };
         _audioCombo.SelectionChangeCommitted += (_, _) =>
             _sources.SelectAudioIndex(_audioCombo.SelectedIndex);
         _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();

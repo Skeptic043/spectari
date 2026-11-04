@@ -29,6 +29,54 @@ public sealed class SourceSelectionModelTests
         Assert.Equal(0, model.SelectedAudioIndex);
     }
     [Fact]
+    public void AudioListShowsEachAppOnce()
+    {
+        var model = Model(() =>
+            [Window(1, "chrome", 5, "Tab A"), Window(2, "chrome", 5, "Tab B"), Window(3, "game", 7)], () => []);
+        model.RefreshAll();
+
+        Assert.Equal(
+            ["No audio", "Captured window's audio", "Desktop audio (all sound)", "chrome", "game"],
+            model.AudioDisplayItems);
+        model.SelectAudioIndex(4);
+        Assert.Equal("game", model.AudioKey);
+        Assert.Equal(7u, model.SelectedAudioPid);
+    }
+
+    [Fact]
+    public void ClosedAudioAppFallsBackOnRefreshWithoutChangingTheWindow()
+    {
+        List<WindowDescription> windows = [Window(1, "game", 7), Window(2, "music", 8)];
+        var model = Model(() => windows, () => []);
+        model.RefreshAll();
+        model.SelectWindowIndex(0);
+        model.SelectAudioKey("music");
+
+        windows = [Window(3, "browser", 9)];
+
+        Assert.True(model.RefreshAudioApps());
+        Assert.Equal(SourceSelectionModel.CapturedWindowAudioKey, model.AudioKey);
+        Assert.DoesNotContain("music", model.AudioDisplayItems);
+        Assert.Contains("browser", model.AudioDisplayItems);
+        Assert.Equal(new IntPtr(1), model.SelectedWindow?.Handle);
+    }
+
+    [Fact]
+    public void RelaunchedAudioAppIsFollowedByItsNewProcess()
+    {
+        List<WindowDescription> windows = [Window(1, "music", 8)];
+        var model = Model(() => windows, () => []);
+        model.RefreshAll();
+        model.SelectAudioKey("music");
+
+        windows = [Window(2, "music", 80)];
+
+        Assert.False(model.RefreshAudioApps());
+        Assert.Equal("music", model.AudioKey);
+        Assert.Equal(80u, model.SelectedAudioPid);
+    }
+
+    [Fact]
     public void FollowingWindowIsDistinctFromSelectingTheSameProcessIndependently()
     {
         var model = Model(() => [Window(1, "game", 42)], () => []);
@@ -222,7 +270,7 @@ public sealed class SourceSelectionModelTests
                 "No audio",
                 "Captured window's audio",
                 "Desktop audio (all sound)",
-                "game - Game title",
+                "game",
             ],
             model.AudioDisplayItems);
 
@@ -232,7 +280,7 @@ public sealed class SourceSelectionModelTests
             [
                 "No audio (monitor share: pick an app below)",
                 "Desktop audio (all sound)",
-                "game - Game title",
+                "game",
             ],
             model.AudioDisplayItems);
 
@@ -242,7 +290,7 @@ public sealed class SourceSelectionModelTests
             [
                 "No audio (capture device share: pick an app below)",
                 "Desktop audio (all sound)",
-                "game - Game title",
+                "game",
             ],
             model.AudioDisplayItems);
         Assert.Equal(0u, model.SelectedAudioPid);
@@ -254,10 +302,10 @@ public sealed class SourceSelectionModelTests
         var model = Model(() => [Window(1, "game", 11, "Game title")], () => [], () => [],
             () => [AudioDevice("card-b", "Bravo Card"), AudioDevice("card-a", "Alpha Card")]);
         model.RefreshAll();
-        Assert.Equal(["No audio", "Captured window's audio", "Desktop audio (all sound)", "game - Game title"], model.AudioDisplayItems);
+        Assert.Equal(["No audio", "Captured window's audio", "Desktop audio (all sound)", "game"], model.AudioDisplayItems);
         model.SelectKind(SourceKind.CaptureDevice);
         Assert.Equal(["No audio (capture device share: pick an app below)", "Desktop audio (all sound)",
-            "Capture device audio - Alpha Card", "Capture device audio - Bravo Card", "game - Game title"], model.AudioDisplayItems);
+            "Capture device audio - Alpha Card", "Capture device audio - Bravo Card", "game"], model.AudioDisplayItems);
         model.SelectAudioIndex(3);
         Assert.Equal("input:card-b", model.AudioKey);
         Assert.Equal("card-b", model.SelectedAudioInputDeviceId);
@@ -295,7 +343,7 @@ public sealed class SourceSelectionModelTests
     }
 
     [Fact]
-    public void MissingCaptureAudioInputFallsBackWithoutAProcessUnavailableWarning()
+    public void MissingCaptureAudioInputFallsBackWithoutAnAppFallback()
     {
         List<AudioInputDeviceDescription> devices = [AudioDevice("card-a", "Capture Card")];
         var model = Model(() => [], () => [], () => [], () => devices);
@@ -308,7 +356,7 @@ public sealed class SourceSelectionModelTests
 
         Assert.Equal(SourceSelectionModel.CapturedWindowAudioKey, model.AudioKey);
         Assert.Null(model.SelectedAudioInputDeviceId);
-        Assert.False(model.IsSelectedAudioProcessUnavailable);
+        Assert.False(model.RefreshAudioApps());
         Assert.Equal(0, model.SelectedAudioIndex);
     }
 
@@ -389,7 +437,7 @@ public sealed class SourceSelectionModelTests
         Assert.Equal(2, restored.SelectedAudioIndex);
         Assert.True(model.IsDesktopAudioSelected);
         Assert.True(restored.IsDesktopAudioSelected);
-        Assert.False(model.IsSelectedAudioProcessUnavailable);
+        Assert.False(model.RefreshAudioApps());
         Assert.Equal(0u, model.SelectedAudioPid);
     }
 

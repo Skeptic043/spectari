@@ -351,6 +351,11 @@ public sealed class MainForm : Form
         _windowCombo.DropDown += (_, _) => PopulateWindows();
         _monitorCombo.DropDown += (_, _) => PopulateMonitors();
         _captureDeviceCombo.DropDown += (_, _) => PopulateCaptureDevices();
+        _audioCombo.DropDown += (_, _) =>
+        {
+            _sourceSelection.RefreshAudioApps();
+            RenderAudioPicker(_sourceSelection, _audioCombo);
+        };
         void SelectSourceKind(SourceKind kind, RadioButton radio)
         {
             if (!radio.Checked) return;
@@ -860,9 +865,14 @@ public sealed class MainForm : Form
 
         // Resolve the audio source: none / captured window / desktop / capture input / app.
         // "Captured window's audio" during a monitor share resolves to no audio.
+        string chosenAudio = _sourceSelection.AudioKey;
+        if (_sourceSelection.RefreshAudioApps())
+        {
+            RenderAudioPicker(_sourceSelection, _audioCombo);
+            AppendLog($"[audio] '{chosenAudio}' is no longer running. Audio switched to: " +
+                $"{_sourceSelection.AudioDisplayItems[_sourceSelection.SelectedAudioIndex]}.");
+        }
         uint audioPid = _sourceSelection.SelectedAudioPid;
-        if (_sourceSelection.IsSelectedAudioProcessUnavailable)
-            AppendLog("[audio] The selected audio source is not running; streaming without audio.");
 
         IntPtr windowHandle = IntPtr.Zero, monitorHandle = IntPtr.Zero;
         string windowProcessName = "";

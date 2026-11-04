@@ -41,6 +41,8 @@ internal sealed class SourceSelectionModel
     private readonly Func<List<AudioInputDeviceDescription>> _enumerateAudioInputDevices;
     private readonly uint _ownPid;
     private List<WindowDescription> _windows = [];
+    // One entry per app: audio is captured per process, not per window.
+    private List<WindowDescription> _audioApps = [];
     private List<MonitorDescription> _monitors = [];
     private List<CaptureDeviceDescription> _captureDevices = [];
     private List<string> _captureDeviceDisplayItems = [];
@@ -109,28 +111,28 @@ internal sealed class SourceSelectionModel
             "Captured window's audio",
             "Desktop audio (all sound)",
             .. _audioInputDeviceDisplayItems,
-            .. _windows.Select(FormatAudioWindow),
+            .. _audioApps.Select(app => app.ProcessName),
         ],
         SourceKind.Monitor =>
         [
             "No audio (monitor share: pick an app below)",
             "Desktop audio (all sound)",
             .. _audioInputDeviceDisplayItems,
-            .. _windows.Select(FormatAudioWindow),
+            .. _audioApps.Select(app => app.ProcessName),
         ],
         SourceKind.CaptureDevice =>
         [
             "No audio (capture device share: pick an app below)",
             "Desktop audio (all sound)",
             .. _audioInputDeviceDisplayItems,
-            .. _windows.Select(FormatAudioWindow),
+            .. _audioApps.Select(app => app.ProcessName),
         ],
         _ =>
         [
             "No audio (pick an app below)",
             "Desktop audio (all sound)",
             .. _audioInputDeviceDisplayItems,
-            .. _windows.Select(FormatAudioWindow),
+            .. _audioApps.Select(app => app.ProcessName),
         ],
     };
 
@@ -157,7 +159,7 @@ internal sealed class SourceSelectionModel
             int inputIndex = _audioInputDevices.FindIndex(device =>
                 AudioInputDeviceIdentityEquals(device.Id, AudioInputDeviceIdFromKey(_audioKey)));
             if (inputIndex >= 0) return fixedOffset + inputIndex;
-            int index = _windows.FindIndex(window => AudioIdentityEquals(window.ProcessName, _audioKey));
+            int index = _audioApps.FindIndex(app => AudioIdentityEquals(app.ProcessName, _audioKey));
             int processOffset = fixedOffset + _audioInputDevices.Count;
             return index >= 0 ? index + processOffset : Kind == SourceKind.Window ? 1 : 0;
         }
@@ -198,7 +200,7 @@ internal sealed class SourceSelectionModel
         DesktopAudioKey => 0,
         CapturedWindowAudioKey when Kind == SourceKind.Window => SelectedWindow?.Pid ?? 0,
         CapturedWindowAudioKey => 0,
-        _ => _windows.FirstOrDefault(window => AudioIdentityEquals(window.ProcessName, _audioKey))?.Pid ?? 0,
+        _ => _audioApps.FirstOrDefault(app => AudioIdentityEquals(app.ProcessName, _audioKey))?.Pid ?? 0,
     };
 
     internal AudioSelectionMode SelectedAudioMode => _audioKey switch
@@ -224,11 +226,6 @@ internal sealed class SourceSelectionModel
         }
     }
 
-    internal bool IsSelectedAudioProcessUnavailable =>
-        _audioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey)
-        && !IsAudioInputDeviceKey(_audioKey)
-        && SelectedAudioPid == 0;
-
     internal void RefreshAll()
     {
         RefreshWindows();
@@ -240,6 +237,7 @@ internal sealed class SourceSelectionModel
     {
         string? previousProcess = SelectedWindow?.ProcessName;
         _windows = PrepareWindows(_enumerateWindows(), _ownPid);
+        _audioApps = AudioAppsFrom(_windows);
         if (SelectedWindowIndex < 0)
         {
             // Deliberate fallback order for a vanished handle: the same process
@@ -252,6 +250,19 @@ internal sealed class SourceSelectionModel
         }
         RefreshAudioInputDevices();
         NormalizeAudioSelection();
+    }
+
+    /// <summary>
+    /// Re-reads the running apps for the audio list only, leaving the window
+    /// selection alone. True when the chosen app is gone and the audio choice
+    /// fell back.
+    /// </summary>
+    internal bool RefreshAudioApps()
+    {
+        string before = _audioKey;
+        _audioApps = AudioAppsFrom(PrepareWindows(_enumerateWindows(), _ownPid));
+        NormalizeAudioSelection();
+        return _audioKey != before;
     }
 
     internal void RefreshMonitors()
@@ -323,6 +334,7 @@ internal sealed class SourceSelectionModel
             _availableAudioInputs = audioInputDeviceItems.Select(item => item.Device).ToList(),
             _audioInputDeviceDisplayItems = audioInputDeviceItems.Select(item => item.DisplayName).ToList(),
         };
+        snapshot._audioApps = AudioAppsFrom(snapshot._windows);
         if (snapshot.SelectedWindowIndex < 0) snapshot._selectedWindowHandle = null;
         if (snapshot.SelectedMonitorIndex < 0) snapshot._selectedMonitorDeviceName = null;
         if (snapshot.SelectedCaptureDeviceIndex < 0)
@@ -398,8 +410,8 @@ internal sealed class SourceSelectionModel
         }
 
         int processIndex = inputIndex - _audioInputDevices.Count;
-        _audioKey = processIndex >= 0 && processIndex < _windows.Count
-            ? _windows[processIndex].ProcessName
+        _audioKey = processIndex >= 0 && processIndex < _audioApps.Count
+            ? _audioApps[processIndex].ProcessName
             : CapturedWindowAudioKey;
     }
 
@@ -463,7 +475,7 @@ internal sealed class SourceSelectionModel
             return SourceSelectionApplyFailure.AudioUnavailable;
         if (audioInputDeviceId is null &&
             selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) &&
-            !_windows.Any(candidate => AudioIdentityEquals(candidate.ProcessName, selection.AudioKey)))
+            !_audioApps.Any(candidate => AudioIdentityEquals(candidate.ProcessName, selection.AudioKey)))
             return SourceSelectionApplyFailure.AudioUnavailable;
 
         Kind = selection.Kind;
@@ -494,8 +506,8 @@ internal sealed class SourceSelectionModel
     internal static string FormatMonitor(MonitorDescription monitor) =>
         $"{monitor.DeviceName}  {monitor.Width}x{monitor.Height}{(monitor.IsPrimary ? "  (primary)" : "")}";
 
-    internal static string FormatAudioWindow(WindowDescription window) =>
-        $"{window.ProcessName} - {Truncate(window.Title, 40)}";
+    private static List<WindowDescription> AudioAppsFrom(IEnumerable<WindowDescription> windows) =>
+        windows.DistinctBy(window => window.ProcessName, StringComparer.OrdinalIgnoreCase).ToList();
 
     private void NormalizeAudioSelection()
     {
@@ -508,7 +520,7 @@ internal sealed class SourceSelectionModel
                 _audioKey = CapturedWindowAudioKey;
             return;
         }
-        if (!_windows.Any(window => AudioIdentityEquals(window.ProcessName, _audioKey)))
+        if (!_audioApps.Any(app => AudioIdentityEquals(app.ProcessName, _audioKey)))
             _audioKey = CapturedWindowAudioKey;
     }
 
