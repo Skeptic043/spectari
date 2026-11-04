@@ -207,6 +207,8 @@ public sealed class WebServer : IDisposable
             }
 
             context.Response.StatusCode = 200;
+            // Revalidate every load, so viewers get the current page after the host updates.
+            context.Response.Headers["Cache-Control"] = "no-cache";
             context.Response.ContentType = ContentTypes.GetValueOrDefault(Path.GetExtension(file), "application/octet-stream");
             byte[] bytes = await File.ReadAllBytesAsync(file, ct);
             context.Response.ContentLength64 = bytes.Length;

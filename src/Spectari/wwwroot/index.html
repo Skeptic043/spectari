@@ -363,21 +363,22 @@ setInterval(() => {
   statsEl.textContent = describeStats();
 }, 1000);
 
-// The stats panel. fps and dropped are what actually arrives at this
-// browser, averaged over a few seconds so they do not flicker. Delay parts
-// are rounded first so delay is exactly network + buffer as shown.
+// The stats panel. "stream" is the target the host encodes at. "shown" is
+// the frames this browser actually put on screen each second (arrived minus
+// dropped), averaged over a few seconds. A still picture still counts: the
+// host keeps sending frames at the target rate. Delay parts are rounded
+// first so delay is exactly network + buffer as shown.
 function describeStats() {
   const average = values => values.length
     ? Math.round(values.reduce((a, b) => a + b, 0) / values.length) : null;
-  const fps = average(stat.arrived);
-  const dropped = average(stat.skipped);
+  const shown = average(stat.arrived.map((arrived, i) => Math.max(0, arrived - stat.skipped[i])));
   const lag = video.buffered.length
     ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
   const buffer = Math.round(lag * 1000);
   const network = clock.offset === null ? null : Math.max(0, Math.round(stat.rawWire + clock.offset));
 
-  return `stream   ${video.videoWidth}x${video.videoHeight} @ ${fps ?? "–"} fps\n` +
-         `dropped  ${fps ? `${dropped}/${fps} per second` : "–"}\n` +
+  return `stream   ${video.videoWidth}x${video.videoHeight} @ ${hello ? hello.fps : "?"} fps\n` +
+         `shown    ${shown ?? "–"} fps\n` +
          (network === null
            ? `delay    measuring…\n  buffer  ${buffer} ms\n`
            : `delay    ${network + buffer} ms\n  network ${network} ms\n  buffer  ${buffer} ms\n`) +
