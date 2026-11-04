@@ -391,7 +391,7 @@ public sealed class MainForm : Form
             if (changed && _rbCaptureDevice.Checked) ScheduleIdlePreviewRefresh();
         };
         _audioCombo.SelectionChangeCommitted += (_, _) =>
-            _sourceSelection.SelectAudioIndex(_audioCombo.SelectedIndex);
+            CommitAudioChoice(this, _sourceSelection, _audioCombo);
         _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
         // The bitrate combo is the single source of truth for the chosen tier:
         // remember every user pick so it survives repopulates (source/preset
@@ -924,6 +924,7 @@ public sealed class MainForm : Form
             AudioPid = audioPid,
             AudioMode = _sourceSelection.SelectedAudioMode,
             CaptureDesktopAudio = _sourceSelection.IsDesktopAudioSelected,
+            DesktopAudioExcludeApp = _sourceSelection.DesktopExcludedApp ?? "",
             AudioInputDeviceId = _sourceSelection.SelectedAudioInputDeviceId ?? "",
             Fps = preset.Fps,
             BitrateKbps = (_bitrateCombo.SelectedItem as BitrateChoice)?.Kbps ?? 0, // 0 = session auto (Medium)

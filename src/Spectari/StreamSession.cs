@@ -24,6 +24,8 @@ public sealed record SessionConfig
     public uint AudioPid { get; init; }
     public AudioSelectionMode AudioMode { get; init; } = AudioSelectionMode.Process;
     public bool CaptureDesktopAudio { get; init; }
+    /// <summary>With desktop audio, the app (process name) left out of it; empty leaves nothing out.</summary>
+    public string DesktopAudioExcludeApp { get; init; } = "";
     public string AudioInputDeviceId { get; init; } = "";
     public int Fps { get; init; } = 60;
 

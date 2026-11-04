@@ -31,6 +31,21 @@ internal static class SourcePickers
         combo.EndUpdate();
     }
 
+    /// <summary>
+    /// Applies the user's pick in an audio dropdown. The "leaving out an app"
+    /// entry first asks which app; canceling keeps the previous choice.
+    /// </summary>
+    internal static void CommitAudioChoice(IWin32Window owner, SourceSelectionModel sources, ComboBox audioCombo)
+    {
+        if (!sources.IsDesktopExceptIndex(audioCombo.SelectedIndex))
+        {
+            sources.SelectAudioIndex(audioCombo.SelectedIndex);
+            return;
+        }
+        LeaveOutAppDialog.Choose(owner, sources);
+        RenderAudioPicker(sources, audioCombo);
+    }
+
     internal static int PickerRowHeight(ComboBox combo) =>
         combo.PreferredHeight + combo.Margin.Vertical;
 }

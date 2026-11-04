@@ -67,10 +67,13 @@ public sealed class ProcessAudioCapture : IDisposable
     // uncounted here and owed back as silence, so a drop advances nothing net.
     private long _deliveredFrames;
 
-    public ProcessAudioCapture(uint targetPid, long videoEpochTicks, Action<byte[], int> onSamples)
+    /// <param name="excludeTargetTree">Capture every app's audio except the
+    /// target and its child processes, instead of only the target's.</param>
+    public ProcessAudioCapture(uint targetPid, long videoEpochTicks, Action<byte[], int> onSamples,
+        bool excludeTargetTree = false)
     {
         _onSamples = onSamples;
-        _client = ActivateProcessLoopback(targetPid);
+        _client = ActivateProcessLoopback(targetPid, excludeTargetTree);
 
         // REL-2: everything past activation is transactional. If format setup,
         // Initialize, GetService, or Start throws, release the client before
@@ -348,7 +351,7 @@ public sealed class ProcessAudioCapture : IDisposable
 
     // ---- activation plumbing --------------------------------------------
 
-    private static IAudioClient ActivateProcessLoopback(uint pid)
+    private static IAudioClient ActivateProcessLoopback(uint pid, bool excludeTargetTree)
     {
         var activationParams = new AUDIOCLIENT_ACTIVATION_PARAMS
         {
@@ -356,7 +359,8 @@ public sealed class ProcessAudioCapture : IDisposable
             ProcessLoopbackParams = new AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS
             {
                 TargetProcessId = pid,
-                ProcessLoopbackMode = 0, // PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE
+                // PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE = 0, _EXCLUDE_ = 1
+                ProcessLoopbackMode = excludeTargetTree ? 1 : 0,
             },
         };
 

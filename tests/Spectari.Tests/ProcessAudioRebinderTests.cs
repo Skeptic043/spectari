@@ -74,6 +74,25 @@ public sealed class ProcessAudioRebinderTests
     }
 
     [Fact]
+    public async Task FailClosedRebindStopsTheOldSourceAndLaterTargetCanStartAgain()
+    {
+        var captures = new List<(uint Pid, FakeAudio Audio)>();
+        using var owner = new ProcessAudioRebinder(new Target(), 0, (_, _) => { }, (pid, _, _) =>
+        {
+            if (pid == 43) throw new InvalidOperationException("synthetic failure");
+            var audio = new FakeAudio();
+            captures.Add((pid, audio));
+            return audio;
+        }, failClosed: true);
+
+        await owner.RebindAsync(43);
+        Assert.True(SpinWait.SpinUntil(() => captures[0].Audio.Disposals == 1, 5000));
+
+        await owner.RebindAsync(42);
+        Assert.Equal([42u, 42u], captures.Select(c => c.Pid));
+    }
+
+    [Fact]
     public void ReplacementPreservesSessionByteClockInsteadOfRepeatingSessionLeadIn()
     {
         long bytes = 0;

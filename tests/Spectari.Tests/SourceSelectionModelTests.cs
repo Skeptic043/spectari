@@ -17,12 +17,12 @@ public sealed class SourceSelectionModelTests
         Assert.Empty(model.AudioInputDevices);
         model.SelectKind(SourceKind.CaptureDevice);
         Assert.Equal("audio-a", Assert.Single(model.AudioInputDevices).Id);
-        model.SelectAudioIndex(2);
+        model.SelectAudioIndex(3);
         Assert.Equal("audio-a", model.SelectedAudioInputDeviceId);
         model.SelectCaptureDeviceIndex(1);
         Assert.Equal("audio-b", Assert.Single(model.AudioInputDevices).Id);
         Assert.Null(model.SelectedAudioInputDeviceId);
-        model.SelectAudioIndex(2);
+        model.SelectAudioIndex(3);
         model.SelectKind(SourceKind.Monitor);
         Assert.Empty(model.AudioInputDevices);
         Assert.Null(model.SelectedAudioInputDeviceId);
@@ -36,9 +36,9 @@ public sealed class SourceSelectionModelTests
         model.RefreshAll();
 
         Assert.Equal(
-            ["No audio", "Captured window's audio", "Desktop audio (all sound)", "chrome", "game"],
+            ["No audio", "Captured window's audio", "Desktop audio (all sound)", "Desktop audio, leaving out an app...", "chrome", "game"],
             model.AudioDisplayItems);
-        model.SelectAudioIndex(4);
+        model.SelectAudioIndex(5);
         Assert.Equal("game", model.AudioKey);
         Assert.Equal(7u, model.SelectedAudioPid);
     }
@@ -74,6 +74,62 @@ public sealed class SourceSelectionModelTests
         Assert.False(model.RefreshAudioApps());
         Assert.Equal("music", model.AudioKey);
         Assert.Equal(80u, model.SelectedAudioPid);
+    }
+
+    [Fact]
+    public void DesktopAudioCanLeaveOutOneApp()
+    {
+        var model = Model(() => [Window(1, "game", 7), Window(2, "discord", 9)], () => []);
+        model.RefreshAll();
+
+        Assert.Equal(
+            ["No audio", "Captured window's audio", "Desktop audio (all sound)",
+             "Desktop audio, leaving out an app...", "discord", "game"],
+            model.AudioDisplayItems);
+        Assert.True(model.IsDesktopExceptIndex(3));
+        Assert.False(model.IsDesktopExceptIndex(2));
+
+        model.SelectDesktopExcept("discord");
+
+        Assert.Equal("mode:desktop-except:discord", model.AudioKey);
+        Assert.Equal("Desktop audio, leaving out discord", model.AudioDisplayItems[3]);
+        Assert.Equal(3, model.SelectedAudioIndex);
+        Assert.True(model.IsDesktopAudioSelected);
+        Assert.Equal(AudioSelectionMode.Desktop, model.SelectedAudioMode);
+        Assert.Equal(0u, model.SelectedAudioPid);
+        Assert.Equal("discord", model.DesktopExcludedApp);
+    }
+
+    [Fact]
+    public void LeftOutAppThatIsNotRunningKeepsTheChoice()
+    {
+        List<WindowDescription> windows = [Window(1, "game", 7), Window(2, "discord", 9)];
+        var model = Model(() => windows, () => []);
+        model.RefreshAll();
+        model.SelectDesktopExcept("discord");
+
+        windows = [Window(1, "game", 7)];
+
+        Assert.False(model.RefreshAudioApps());
+        Assert.Equal("mode:desktop-except:discord", model.AudioKey);
+        Assert.Equal("discord", model.DesktopExcludedApp);
+
+        var restored = Model(() => windows, () => []);
+        restored.RefreshAll();
+        restored.SelectAudioKey(model.AudioKey);
+        Assert.Equal(model.AudioKey, restored.AudioKey);
+        Assert.Equal(SourceSelectionApplyFailure.None, restored.TryApplySelection(restored.CurrentSelection));
+    }
+
+    [Fact]
+    public void MonitorSharesOfferLeavingAnAppOutRightAfterDesktopAudio()
+    {
+        var model = Model(() => [Window(1, "game", 7)], () => []);
+        model.RefreshAll();
+        model.SelectKind(SourceKind.Monitor);
+
+        Assert.True(model.IsDesktopExceptIndex(2));
+        Assert.Equal("Desktop audio, leaving out an app...", model.AudioDisplayItems[2]);
     }
 
     [Fact]
@@ -270,6 +326,7 @@ public sealed class SourceSelectionModelTests
                 "No audio",
                 "Captured window's audio",
                 "Desktop audio (all sound)",
+                "Desktop audio, leaving out an app...",
                 "game",
             ],
             model.AudioDisplayItems);
@@ -280,6 +337,7 @@ public sealed class SourceSelectionModelTests
             [
                 "No audio (monitor share: pick an app below)",
                 "Desktop audio (all sound)",
+                "Desktop audio, leaving out an app...",
                 "game",
             ],
             model.AudioDisplayItems);
@@ -290,6 +348,7 @@ public sealed class SourceSelectionModelTests
             [
                 "No audio (capture device share: pick an app below)",
                 "Desktop audio (all sound)",
+                "Desktop audio, leaving out an app...",
                 "game",
             ],
             model.AudioDisplayItems);
@@ -302,15 +361,15 @@ public sealed class SourceSelectionModelTests
         var model = Model(() => [Window(1, "game", 11, "Game title")], () => [], () => [],
             () => [AudioDevice("card-b", "Bravo Card"), AudioDevice("card-a", "Alpha Card")]);
         model.RefreshAll();
-        Assert.Equal(["No audio", "Captured window's audio", "Desktop audio (all sound)", "game"], model.AudioDisplayItems);
+        Assert.Equal(["No audio", "Captured window's audio", "Desktop audio (all sound)", "Desktop audio, leaving out an app...", "game"], model.AudioDisplayItems);
         model.SelectKind(SourceKind.CaptureDevice);
-        Assert.Equal(["No audio (capture device share: pick an app below)", "Desktop audio (all sound)",
+        Assert.Equal(["No audio (capture device share: pick an app below)", "Desktop audio (all sound)", "Desktop audio, leaving out an app...",
             "Capture device audio - Alpha Card", "Capture device audio - Bravo Card", "game"], model.AudioDisplayItems);
-        model.SelectAudioIndex(3);
+        model.SelectAudioIndex(4);
         Assert.Equal("input:card-b", model.AudioKey);
         Assert.Equal("card-b", model.SelectedAudioInputDeviceId);
         Assert.Equal(0u, model.SelectedAudioPid);
-        Assert.Equal(3, model.SelectedAudioIndex);
+        Assert.Equal(4, model.SelectedAudioIndex);
     }
 
     [Fact]
@@ -324,7 +383,7 @@ public sealed class SourceSelectionModelTests
         var model = Model(() => [], () => [], () => [], () => devices);
         model.RefreshAll();
         model.SelectKind(SourceKind.CaptureDevice);
-        model.SelectAudioIndex(3);
+        model.SelectAudioIndex(4);
         string persistedKey = model.AudioKey;
 
         devices =
@@ -339,7 +398,7 @@ public sealed class SourceSelectionModelTests
 
         Assert.Equal("input:card-b", persistedKey);
         Assert.Equal("card-b", restored.SelectedAudioInputDeviceId);
-        Assert.Equal(2, restored.SelectedAudioIndex);
+        Assert.Equal(3, restored.SelectedAudioIndex);
     }
 
     [Fact]
@@ -364,13 +423,13 @@ public sealed class SourceSelectionModelTests
     [InlineData((int)SourceKind.Window, 0, SourceSelectionModel.NoAudioKey)]
     [InlineData((int)SourceKind.Window, 1, SourceSelectionModel.CapturedWindowAudioKey)]
     [InlineData((int)SourceKind.Window, 2, SourceSelectionModel.DesktopAudioKey)]
-    [InlineData((int)SourceKind.Window, 3, "game")]
+    [InlineData((int)SourceKind.Window, 4, "game")]
     [InlineData((int)SourceKind.Monitor, 0, SourceSelectionModel.NoAudioKey)]
     [InlineData((int)SourceKind.Monitor, 1, SourceSelectionModel.DesktopAudioKey)]
-    [InlineData((int)SourceKind.Monitor, 2, "game")]
+    [InlineData((int)SourceKind.Monitor, 3, "game")]
     [InlineData((int)SourceKind.CaptureDevice, 0, SourceSelectionModel.NoAudioKey)]
     [InlineData((int)SourceKind.CaptureDevice, 1, SourceSelectionModel.DesktopAudioKey)]
-    [InlineData((int)SourceKind.CaptureDevice, 2, "game")]
+    [InlineData((int)SourceKind.CaptureDevice, 3, "game")]
     public void AudioSelectionIndexesMapToDisplayedItems(
         int kindValue,
         int selectedIndex,
@@ -390,7 +449,7 @@ public sealed class SourceSelectionModelTests
     [InlineData(SourceSelectionModel.CapturedWindowAudioKey, 1, 0)]
     [InlineData(SourceSelectionModel.NoAudioKey, 0, 0)]
     [InlineData(SourceSelectionModel.DesktopAudioKey, 2, 1)]
-    [InlineData("game", 3, 2)]
+    [InlineData("game", 4, 3)]
     public void PersistedAudioSelectionSurvivesShareKindRoundTrips(
         string persistedKey,
         int windowIndex,
@@ -503,7 +562,7 @@ public sealed class SourceSelectionModelTests
         model.RefreshAll();
         model.SelectWindowIndex(1);
         model.SelectMonitorIndex(1);
-        model.SelectAudioIndex(4);
+        model.SelectAudioIndex(5);
 
         windows = [Window(1, "Alpha", 11)];
         monitors = [Monitor(10, "DISPLAY-A")];
@@ -534,7 +593,7 @@ public sealed class SourceSelectionModelTests
         dialog.SelectKind(SourceKind.Monitor);
         dialog.SelectWindowIndex(1);
         dialog.SelectMonitorIndex(1);
-        dialog.SelectAudioIndex(3);
+        dialog.SelectAudioIndex(4);
 
         windows =
         [
@@ -571,7 +630,7 @@ public sealed class SourceSelectionModelTests
         model.SelectAudioIndex(0);
         SourceSelectionModel dialog = model.CreateFreshSnapshot();
         dialog.SelectWindowIndex(1);
-        dialog.SelectAudioIndex(4);
+        dialog.SelectAudioIndex(5);
 
         windows = [Window(1, "Alpha", 11)];
         model.RefreshWindows();

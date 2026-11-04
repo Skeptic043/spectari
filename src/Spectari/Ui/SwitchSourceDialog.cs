@@ -193,7 +193,7 @@ internal sealed class SwitchSourceDialog : Form
             RenderAudioPicker(_sources, _audioCombo);
         };
         _audioCombo.SelectionChangeCommitted += (_, _) =>
-            _sources.SelectAudioIndex(_audioCombo.SelectedIndex);
+            CommitAudioChoice(this, _sources, _audioCombo);
         _presetCombo.SelectedIndexChanged += (_, _) => RefreshSourceOptions();
     }
 

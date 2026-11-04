@@ -33,6 +33,7 @@ internal sealed class SourceSelectionModel
     // A colon cannot occur in a Windows process name, so this persisted mode
     // key cannot be mistaken for one of the per-app selections.
     internal const string DesktopAudioKey = "mode:desktop";
+    internal const string DesktopExceptKeyPrefix = "mode:desktop-except:";
     internal const string AudioInputDeviceKeyPrefix = "input:";
 
     private readonly Func<List<WindowDescription>> _enumerateWindows;
@@ -103,6 +104,7 @@ internal sealed class SourceSelectionModel
     internal IReadOnlyList<string> WindowDisplayItems => _windows.Select(FormatWindow).ToArray();
     internal IReadOnlyList<string> MonitorDisplayItems => _monitors.Select(FormatMonitor).ToArray();
     internal IReadOnlyList<string> CaptureDeviceDisplayItems => _captureDeviceDisplayItems;
+    internal IReadOnlyList<string> AudioAppNames => _audioApps.Select(app => app.ProcessName).ToList();
     internal IReadOnlyList<string> AudioDisplayItems => Kind switch
     {
         SourceKind.Window =>
@@ -110,6 +112,7 @@ internal sealed class SourceSelectionModel
             "No audio",
             "Captured window's audio",
             "Desktop audio (all sound)",
+            DesktopExceptDisplayItem,
             .. _audioInputDeviceDisplayItems,
             .. _audioApps.Select(app => app.ProcessName),
         ],
@@ -117,6 +120,7 @@ internal sealed class SourceSelectionModel
         [
             "No audio (monitor share: pick an app below)",
             "Desktop audio (all sound)",
+            DesktopExceptDisplayItem,
             .. _audioInputDeviceDisplayItems,
             .. _audioApps.Select(app => app.ProcessName),
         ],
@@ -124,6 +128,7 @@ internal sealed class SourceSelectionModel
         [
             "No audio (capture device share: pick an app below)",
             "Desktop audio (all sound)",
+            DesktopExceptDisplayItem,
             .. _audioInputDeviceDisplayItems,
             .. _audioApps.Select(app => app.ProcessName),
         ],
@@ -131,6 +136,7 @@ internal sealed class SourceSelectionModel
         [
             "No audio (pick an app below)",
             "Desktop audio (all sound)",
+            DesktopExceptDisplayItem,
             .. _audioInputDeviceDisplayItems,
             .. _audioApps.Select(app => app.ProcessName),
         ],
@@ -154,8 +160,9 @@ internal sealed class SourceSelectionModel
         {
             if (_audioKey == NoAudioKey) return 0;
             if (_audioKey == CapturedWindowAudioKey) return Kind == SourceKind.Window ? 1 : 0;
-            if (_audioKey == DesktopAudioKey) return Kind == SourceKind.Window ? 2 : 1;
-            int fixedOffset = Kind == SourceKind.Window ? 3 : 2;
+            if (_audioKey == DesktopAudioKey) return DesktopIndex;
+            if (IsDesktopExceptKey(_audioKey)) return DesktopIndex + 1;
+            int fixedOffset = DesktopIndex + 2;
             int inputIndex = _audioInputDevices.FindIndex(device =>
                 AudioInputDeviceIdentityEquals(device.Id, AudioInputDeviceIdFromKey(_audioKey)));
             if (inputIndex >= 0) return fixedOffset + inputIndex;
@@ -198,6 +205,7 @@ internal sealed class SourceSelectionModel
     {
         NoAudioKey => 0,
         DesktopAudioKey => 0,
+        _ when IsDesktopExceptKey(_audioKey) => 0,
         CapturedWindowAudioKey when Kind == SourceKind.Window => SelectedWindow?.Pid ?? 0,
         CapturedWindowAudioKey => 0,
         _ => _audioApps.FirstOrDefault(app => AudioIdentityEquals(app.ProcessName, _audioKey))?.Pid ?? 0,
@@ -207,12 +215,28 @@ internal sealed class SourceSelectionModel
     {
         NoAudioKey => AudioSelectionMode.None,
         DesktopAudioKey => AudioSelectionMode.Desktop,
+        _ when IsDesktopExceptKey(_audioKey) => AudioSelectionMode.Desktop,
         CapturedWindowAudioKey when Kind == SourceKind.Window => AudioSelectionMode.FollowWindow,
         _ when IsAudioInputDeviceKey(_audioKey) => AudioSelectionMode.Input,
         _ => AudioSelectionMode.Process,
     };
 
-    internal bool IsDesktopAudioSelected => _audioKey == DesktopAudioKey;
+    internal bool IsDesktopAudioSelected => _audioKey == DesktopAudioKey || IsDesktopExceptKey(_audioKey);
+
+    /// <summary>The app left out of desktop audio, or null when nothing is left out.</summary>
+    internal string? DesktopExcludedApp =>
+        IsDesktopExceptKey(_audioKey) ? _audioKey[DesktopExceptKeyPrefix.Length..] : null;
+
+    /// <summary>True for the "leaving out an app" entry, which needs an app picked before it applies.</summary>
+    internal bool IsDesktopExceptIndex(int index) => index == DesktopIndex + 1;
+
+    internal void SelectDesktopExcept(string app) => _audioKey = DesktopExceptKeyPrefix + app;
+
+    private int DesktopIndex => Kind == SourceKind.Window ? 2 : 1;
+
+    private string DesktopExceptDisplayItem => DesktopExcludedApp is { } app
+        ? $"Desktop audio, leaving out {app}"
+        : "Desktop audio, leaving out an app...";
 
     internal string? SelectedAudioInputDeviceId
     {
@@ -385,7 +409,8 @@ internal sealed class SourceSelectionModel
 
     internal void SelectAudioIndex(int index)
     {
-        int fixedOffset = Kind == SourceKind.Window ? 3 : 2;
+        int fixedOffset = DesktopIndex + 2;
+        if (IsDesktopExceptIndex(index)) return;
         if (index == 0)
         {
             _audioKey = NoAudioKey;
@@ -396,7 +421,7 @@ internal sealed class SourceSelectionModel
             _audioKey = CapturedWindowAudioKey;
             return;
         }
-        if (index == (Kind == SourceKind.Window ? 2 : 1))
+        if (index == DesktopIndex)
         {
             _audioKey = DesktopAudioKey;
             return;
@@ -475,6 +500,7 @@ internal sealed class SourceSelectionModel
             return SourceSelectionApplyFailure.AudioUnavailable;
         if (audioInputDeviceId is null &&
             selection.AudioKey is not (NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) &&
+            !IsDesktopExceptKey(selection.AudioKey) &&
             !_audioApps.Any(candidate => AudioIdentityEquals(candidate.ProcessName, selection.AudioKey)))
             return SourceSelectionApplyFailure.AudioUnavailable;
 
@@ -512,6 +538,7 @@ internal sealed class SourceSelectionModel
     private void NormalizeAudioSelection()
     {
         if (_audioKey is NoAudioKey or CapturedWindowAudioKey or DesktopAudioKey) return;
+        if (IsDesktopExceptKey(_audioKey)) return;
         string? audioInputDeviceId = AudioInputDeviceIdFromKey(_audioKey);
         if (audioInputDeviceId is not null)
         {
@@ -526,6 +553,10 @@ internal sealed class SourceSelectionModel
 
     private static string AudioInputDeviceKey(string deviceId) =>
         AudioInputDeviceKeyPrefix + deviceId;
+
+    private static bool IsDesktopExceptKey(string key) =>
+        key.StartsWith(DesktopExceptKeyPrefix, StringComparison.Ordinal)
+        && key.Length > DesktopExceptKeyPrefix.Length;
 
     private static bool IsAudioInputDeviceKey(string key) =>
         key.StartsWith(AudioInputDeviceKeyPrefix, StringComparison.Ordinal);

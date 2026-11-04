@@ -9,6 +9,7 @@ internal sealed class ProcessAudioRebinder : IDisposable
     private readonly IWindowAudioTarget _target;
     private readonly Func<uint, long, Action<byte[], int>, IDisposable> _create;
     private readonly AudioSegmentOutput _output;
+    private readonly bool _failClosed;
     private IDisposable? _active;
     private uint _currentPid;
     private uint _requestedPid;
@@ -17,10 +18,14 @@ internal sealed class ProcessAudioRebinder : IDisposable
     private bool _workerRunning;
     private Task _worker = Task.CompletedTask;
 
+    /// <param name="failClosed">When a rebind fails, stop the previous capture
+    /// (silence) instead of keeping it. Needed when the previous capture would
+    /// include audio the user chose to leave out.</param>
     internal ProcessAudioRebinder(IWindowAudioTarget target, long epoch, Action<byte[], int> write,
-        Func<uint, long, Action<byte[], int>, IDisposable>? create = null)
+        Func<uint, long, Action<byte[], int>, IDisposable>? create = null, bool failClosed = false)
     {
         _target = target;
+        _failClosed = failClosed;
         _create = create ?? ((pid, start, emit) => new ProcessAudioCapture(pid, start, emit));
         _output = new AudioSegmentOutput(epoch, write);
         _currentPid = _requestedPid = target.AudioProcessId;
@@ -80,9 +85,19 @@ internal sealed class ProcessAudioRebinder : IDisposable
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"[audio] follow-window rebind failed: {ex.Message}");
+                Console.Error.WriteLine($"[audio] audio rebind failed: {ex.Message}");
                 lock (_gate)
                 {
+                    if (_failClosed && !_disposed)
+                    {
+                        // Drop the old capture's writes and keep the timeline
+                        // fed with silence so the encoder does not stall.
+                        _output.Begin(generation);
+                        retired = _active;
+                        long silentGeneration = generation;
+                        _active = new SilentAudio((data, length) => _output.Write(silentGeneration, data, length));
+                        _currentPid = 0; // any later process change starts a capture again
+                    }
                     if (_disposed || _requestedPid == pid) { _workerRunning = false; return; }
                 }
             }
@@ -108,6 +123,37 @@ internal sealed class ProcessAudioRebinder : IDisposable
         }
         if (active is not null) CaptureRetirement.Start(active);
     }
+}
+
+/// <summary>Writes real-time silence until disposed.</summary>
+internal sealed class SilentAudio : IDisposable
+{
+    private const int BytesPerFrame = ProcessAudioCapture.Channels * 4;
+    private readonly CancellationTokenSource _cts = new();
+
+    internal SilentAudio(Action<byte[], int> write)
+    {
+        CancellationToken token = _cts.Token;
+        new Thread(() =>
+        {
+            var silence = new byte[ProcessAudioCapture.SampleRate / 100 * BytesPerFrame];
+            long start = Stopwatch.GetTimestamp();
+            long sentFrames = 0;
+            while (!token.IsCancellationRequested)
+            {
+                long dueFrames = (Stopwatch.GetTimestamp() - start) * ProcessAudioCapture.SampleRate / Stopwatch.Frequency;
+                while (sentFrames < dueFrames)
+                {
+                    int frames = (int)Math.Min(dueFrames - sentFrames, silence.Length / BytesPerFrame);
+                    write(silence, frames * BytesPerFrame);
+                    sentFrames += frames;
+                }
+                Thread.Sleep(10);
+            }
+        }) { IsBackground = true, Name = "Spectari silent audio" }.Start();
+    }
+
+    public void Dispose() => _cts.Cancel();
 }
 
 internal sealed class AudioSegmentOutput(long epoch, Action<byte[], int> write, Func<long>? clock = null)

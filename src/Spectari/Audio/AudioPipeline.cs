@@ -9,6 +9,7 @@ internal sealed class AudioPipeline : IDisposable
     private readonly uint _audioPid;
     private IWindowAudioTarget? _windowTarget;
     private readonly bool _captureDesktopAudio;
+    private readonly string? _desktopExcludeApp;
     private readonly string? _audioInputDeviceId;
     private readonly NamedPipeServerStream _pipe;
     private readonly CancellationTokenSource _cts = new();
@@ -25,11 +26,14 @@ internal sealed class AudioPipeline : IDisposable
     {
     }
 
+    /// <param name="desktopExcludeApp">With desktop audio, the app (by process
+    /// name) left out for the whole stream; null or empty leaves nothing out.</param>
     internal AudioPipeline(
         uint audioPid,
         bool captureDesktopAudio,
         string? audioInputDeviceId,
-        int port)
+        int port,
+        string? desktopExcludeApp = null)
     {
         int selectedModes = (audioPid != 0 ? 1 : 0)
             + (captureDesktopAudio ? 1 : 0)
@@ -39,6 +43,7 @@ internal sealed class AudioPipeline : IDisposable
 
         _audioPid = audioPid;
         _captureDesktopAudio = captureDesktopAudio;
+        _desktopExcludeApp = captureDesktopAudio && !string.IsNullOrEmpty(desktopExcludeApp) ? desktopExcludeApp : null;
         // Empty input IDs must have the same meaning during validation and startup.
         _audioInputDeviceId = string.IsNullOrEmpty(audioInputDeviceId) ? null : audioInputDeviceId;
         PipeName = FormatPipeName(port);
@@ -55,14 +60,16 @@ internal sealed class AudioPipeline : IDisposable
         uint audioPid,
         bool captureDesktopAudio,
         string? audioInputDeviceId,
-        int port) =>
+        int port,
+        string? desktopExcludeApp = null) =>
         audioPid == 0 && !captureDesktopAudio && string.IsNullOrEmpty(audioInputDeviceId)
             ? null
-            : new AudioPipeline(audioPid, captureDesktopAudio, audioInputDeviceId, port);
+            : new AudioPipeline(audioPid, captureDesktopAudio, audioInputDeviceId, port, desktopExcludeApp);
 
     internal static AudioPipeline? Create(SessionConfig config, Capture.ICaptureSource capture)
     {
-        AudioPipeline? pipeline = Create(config.AudioPid, config.CaptureDesktopAudio, config.AudioInputDeviceId, config.Port);
+        AudioPipeline? pipeline = Create(config.AudioPid, config.CaptureDesktopAudio, config.AudioInputDeviceId,
+            config.Port, config.DesktopAudioExcludeApp);
         if (pipeline is not null && config.AudioMode == AudioSelectionMode.FollowWindow)
             pipeline._windowTarget = capture as IWindowAudioTarget;
         return pipeline;
@@ -73,9 +80,10 @@ internal sealed class AudioPipeline : IDisposable
     internal IDisposable CreateCapture(
         Func<IDisposable> createDesktop,
         Func<string, IDisposable> createInput,
-        Func<uint, IDisposable> createProcess) =>
+        Func<uint, IDisposable> createProcess,
+        Func<string, IDisposable> createDesktopExcluding) =>
         _captureDesktopAudio
-            ? createDesktop()
+            ? _desktopExcludeApp is not null ? createDesktopExcluding(_desktopExcludeApp) : createDesktop()
             : _audioInputDeviceId is not null
                 ? createInput(_audioInputDeviceId)
                 : createProcess(_audioPid);
@@ -120,9 +128,12 @@ internal sealed class AudioPipeline : IDisposable
                     id => new CaptureDeviceAudioCapture(id, videoEpochTicks, WriteToPipe),
                     pid => _windowTarget is null
                         ? new ProcessAudioCapture(pid, videoEpochTicks, WriteToPipe)
-                        : new ProcessAudioRebinder(_windowTarget, videoEpochTicks, WriteToPipe));
+                        : new ProcessAudioRebinder(_windowTarget, videoEpochTicks, WriteToPipe),
+                    app => ExcludedAppTarget.StartDesktopCapture(app, videoEpochTicks, WriteToPipe));
             }
-            if (_captureDesktopAudio)
+            if (_desktopExcludeApp is not null)
+                Console.WriteLine("[audio] desktop audio leaving out the chosen app");
+            else if (_captureDesktopAudio)
                 Console.WriteLine("[audio] desktop audio follows the default output device");
             else if (_audioInputDeviceId is not null)
                 Console.WriteLine("[audio] capturing audio from the selected capture input");

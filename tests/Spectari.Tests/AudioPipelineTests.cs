@@ -7,16 +7,17 @@ namespace Spectari.Tests;
 public sealed class AudioPipelineTests
 {
     [Theory]
-    [InlineData(42u, false, null, "process:42")]
-    [InlineData(42u, false, "", "process:42")]
-    [InlineData(0u, true, null, "desktop")]
-    [InlineData(0u, true, "", "desktop")]
-    [InlineData(0u, false, "capture-input-id", "input:capture-input-id")]
+    [InlineData(42u, false, null, null, "process:42")]
+    [InlineData(42u, false, "", null, "process:42")]
+    [InlineData(0u, true, null, null, "desktop")]
+    [InlineData(0u, true, "", "", "desktop")]
+    [InlineData(0u, true, null, "discord", "desktop-except:discord")]
+    [InlineData(0u, false, "capture-input-id", null, "input:capture-input-id")]
     public void StartupCreatesOnlyTheSelectedCapture(
-        uint pid, bool desktop, string? inputId, string expected)
+        uint pid, bool desktop, string? inputId, string? excludeApp, string expected)
     {
         using AudioPipeline pipeline = Assert.IsType<AudioPipeline>(
-            AudioPipeline.Create(pid, desktop, inputId, 8093));
+            AudioPipeline.Create(pid, desktop, inputId, 8093, excludeApp));
         var calls = new List<string>();
         using var capture = new FakeCapture();
 
@@ -29,7 +30,8 @@ public sealed class AudioPipelineTests
         IDisposable selected = pipeline.CreateCapture(
             () => Record("desktop"),
             id => Record($"input:{id}"),
-            processId => Record($"process:{processId}"));
+            processId => Record($"process:{processId}"),
+            excluded => Record($"desktop-except:{excluded}"));
 
         Assert.Same(capture, selected);
         Assert.Equal(expected, Assert.Single(calls));
