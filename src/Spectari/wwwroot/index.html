@@ -141,9 +141,11 @@ let ws = null, ms = null, sb = null, hello = null;
 let queue = [], queuedBytes = 0, retryMs = 500, hurrySince = null, lastDataAt = 0;
 // rawWire: viewer clock at arrival minus the host clock at send, smoothed.
 // It only becomes the network delay once the clock difference is removed.
+// arrived / skipped: frames that reached this browser, and frames the
+// browser dropped instead of showing, in each of the last few seconds.
+// totalLast is null until the first reading sets the starting point.
 let stat = { rawWire: 0, bytes: 0, bytesWindowStart: performance.now(), kbps: 0,
-             presented: 0, presentedLast: 0, shownFps: 0, receivedFps: 0,
-             droppedLast: 0, totalLast: 0, dropWindow: "–", sentFps: "–" };
+             arrived: [], skipped: [], droppedLast: 0, totalLast: null };
 
 // Host and viewer clocks differ, and fragment send times use the host clock.
 // Each stats poll estimates the difference from the request's round trip;
@@ -154,7 +156,6 @@ function pollHost() {
   const t0 = Date.now();
   fetch("/api/stats", { cache: "no-store" }).then(r => r.json()).then(s => {
     const t1 = Date.now();
-    if (typeof s.sentFps === "number") stat.sentFps = s.sentFps;
     if (typeof s.nowMs !== "number") return;
     clock.samples.push({ rtt: t1 - t0, offset: s.nowMs - (t0 + t1) / 2 });
     if (clock.samples.length > 8) clock.samples.shift();
@@ -163,11 +164,6 @@ function pollHost() {
 }
 // Polled only while the overlay is open.
 setInterval(() => { if (statsEl.classList.contains("show")) pollHost(); }, 2000);
-
-if ("requestVideoFrameCallback" in HTMLVideoElement.prototype) {
-  const countPresented = () => { stat.presented++; video.requestVideoFrameCallback(countPresented); };
-  video.requestVideoFrameCallback(countPresented);
-}
 
 if (params.get("stats") === "1") {
   statsEl.classList.add("show");
@@ -343,8 +339,6 @@ setInterval(() => {
     stat.kbps = Math.round((stat.bytes * 8) / winSec / 1000);
     stat.bytes = 0;
     stat.bytesWindowStart = now;
-    stat.shownFps = Math.round((stat.presented - stat.presentedLast) / winSec);
-    stat.presentedLast = stat.presented;
   }
   const stalled = ws && ws.readyState === 1 && lastDataAt > 0 && performance.now() - lastDataAt > 3000;
   const live = !!(ws && ws.readyState === 1 && video.readyState >= 2 && !video.paused) && !stalled;
@@ -357,31 +351,44 @@ setInterval(() => {
 
   const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
   if (q) {
-    const dd = q.droppedVideoFrames - stat.droppedLast;
-    const dt = q.totalVideoFrames - stat.totalLast;
-    stat.dropWindow = dt > 0 ? `${dd}/${dt} (${(dd * 100 / dt).toFixed(1)}%)` : "–";
-    // Received = frames that reached the decoder this second. Without
-    // requestVideoFrameCallback, shown = received minus dropped.
-    stat.receivedFps = Math.max(0, dt);
-    if (!("requestVideoFrameCallback" in HTMLVideoElement.prototype)) stat.shownFps = Math.max(0, dt - dd);
+    // Counters restart at 0 after a reconnect; a negative step counts as 0.
+    if (stat.totalLast !== null) {
+      stat.arrived.push(Math.max(0, q.totalVideoFrames - stat.totalLast));
+      stat.skipped.push(Math.max(0, q.droppedVideoFrames - stat.droppedLast));
+      if (stat.arrived.length > 3) { stat.arrived.shift(); stat.skipped.shift(); }
+    }
     stat.droppedLast = q.droppedVideoFrames;
     stat.totalLast = q.totalVideoFrames;
   }
-  const lag = video.buffered.length
-    ? (video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
-  // Rounded parts first, so delay is exactly network + buffer as shown.
-  const buffer = Math.round(lag * 1000);
-  const network = clock.offset === null ? null : Math.max(0, Math.round(stat.rawWire + clock.offset));
-  statsEl.textContent =
-    `stream   ${video.videoWidth}x${video.videoHeight}@${hello ? hello.fps : "?"}\n` +
-    `fps      sent ${stat.sentFps} · received ${stat.receivedFps} · shown ${stat.shownFps}\n` +
-    `dropped  ${stat.dropWindow} last 1s\n` +
-    (network === null
-      ? `delay    measuring…\n  buffer ${buffer} ms\n`
-      : `delay    ${network + buffer} ms\n  network ${network} ms\n  buffer ${buffer} ms\n`) +
-    `bitrate  ${stat.kbps} kbps\n` +
-    `rate     ${video.playbackRate.toFixed(2)}x`;
+  statsEl.textContent = describeStats();
 }, 1000);
+
+// The stats panel, in plain words. Frame rates are what actually arrives
+// here, averaged over a few seconds so they do not flicker.
+function describeStats() {
+  const average = values => Math.round(values.reduce((a, b) => a + b, 0) / values.length);
+  const playing = video.videoWidth > 0 && stat.arrived.length > 0;
+  const fps = playing ? average(stat.arrived) : null;
+  const skipped = playing ? average(stat.skipped) : 0;
+  const video_ = playing ? `${video.videoWidth} × ${video.videoHeight} at ${fps} fps` : "waiting for video…";
+
+  const playback = !playing ? "–"
+    : skipped === 0 ? "smooth, every frame shown"
+    : `${skipped === 1 ? "1 frame" : `${skipped} frames`} skipped each second`;
+
+  const lag = video.buffered.length
+    ? Math.max(0, video.buffered.end(video.buffered.length - 1) - video.currentTime) : 0;
+  const network = clock.offset === null ? null : Math.max(0, (stat.rawWire + clock.offset) / 1000);
+  const catching = video.playbackRate > 1 ? ", catching up" : video.playbackRate < 1 ? ", building buffer" : "";
+  const delay = network === null
+    ? "measuring…"
+    : `${(network + lag).toFixed(1)} s behind live (${lag.toFixed(1)} s buffer${catching})`;
+
+  return `Video     ${video_}\n` +
+         `Playback  ${playback}\n` +
+         `Delay     ${delay}\n` +
+         `Data      ${(stat.kbps / 1000).toFixed(1)} Mbps`;
+}
 
 connect();
 </script>
